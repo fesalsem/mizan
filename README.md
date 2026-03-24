@@ -34,13 +34,6 @@
 2. Go to **Settings → Pages → Source: main branch / root**
 3. Your app is live at `https://YOUR-USERNAME.github.io/mizan`
 
-### Option C — Python CLI version
-```bash
-pip install -r requirements.txt
-python mizan.py
-```
-
----
 
 ## 📐 Shariah Screening Standards
 
