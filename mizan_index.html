@@ -1,0 +1,1417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Mizan — Halal Investment Screener · Bursa Malaysia</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Noto+Naskh+Arabic:wght@400;600&display=swap" rel="stylesheet"/>
+<style>
+/* ══════════════════════════════════════════════
+   DESIGN SYSTEM
+══════════════════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#080c10;
+  --surface:#0e1318;
+  --surface2:#141b23;
+  --surface3:#1a222c;
+  --border:#1e2a36;
+  --border2:#263342;
+  --gold:#c8a951;
+  --gold2:#e8c96a;
+  --gold-dim:#6b5520;
+  --gold-glow:#c8a95120;
+  --teal:#2ec4b6;
+  --teal-dim:#0d3d39;
+  --green:#22d06b;
+  --green-dim:#0a2e1a;
+  --green-glow:#22d06b18;
+  --amber:#f0a500;
+  --amber-dim:#2d1f00;
+  --amber-glow:#f0a50018;
+  --red:#f04f4f;
+  --red-dim:#2d0c0c;
+  --red-glow:#f04f4f18;
+  --text:#dde6f0;
+  --text2:#8b9db0;
+  --text3:#4a5a6a;
+  --mono:'IBM Plex Mono',monospace;
+  --sans:'Syne',sans-serif;
+  --r:10px;
+  --r-sm:6px;
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:var(--sans);
+  background:var(--bg);
+  color:var(--text);
+  min-height:100vh;
+  overflow-x:hidden;
+}
+
+/* ── NOISE TEXTURE OVERLAY ── */
+body::before{
+  content:'';
+  position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  opacity:0.025;
+}
+
+/* ── GEOMETRIC BACKGROUND ── */
+.geo-bg{
+  position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;
+}
+.geo-bg svg{width:100%;height:100%;opacity:0.03}
+
+/* ══════════════════════════════════════════════
+   LAYOUT
+══════════════════════════════════════════════ */
+.app{position:relative;z-index:1;display:flex;flex-direction:column;min-height:100vh}
+
+/* ── TOPBAR ── */
+.topbar{
+  display:flex;align-items:center;gap:20px;
+  padding:0 32px;height:60px;
+  border-bottom:1px solid var(--border);
+  background:rgba(8,12,16,0.9);
+  backdrop-filter:blur(12px);
+  position:sticky;top:0;z-index:100;
+}
+.logo{
+  display:flex;align-items:center;gap:10px;
+  text-decoration:none;
+}
+.logo-icon{
+  width:32px;height:32px;
+  border:1px solid var(--gold-dim);
+  border-radius:6px;
+  display:grid;place-items:center;
+  background:var(--gold-glow);
+}
+.logo-icon svg{width:18px;height:18px}
+.logo-text{
+  font-size:1.1rem;font-weight:700;
+  color:var(--gold);letter-spacing:0.04em;
+}
+.logo-sub{
+  font-size:0.7rem;color:var(--text3);
+  letter-spacing:0.08em;text-transform:uppercase;
+  margin-left:auto;
+}
+.nav-tabs{
+  display:flex;gap:2px;margin-left:auto;
+}
+.nav-tab{
+  padding:6px 16px;border-radius:var(--r-sm);
+  font-size:0.78rem;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;
+  cursor:pointer;border:none;background:none;color:var(--text3);
+  transition:all 0.15s;font-family:var(--sans);
+}
+.nav-tab:hover{color:var(--text);background:var(--surface2)}
+.nav-tab.active{color:var(--gold);background:var(--gold-glow);border:1px solid var(--gold-dim)}
+
+/* ── MAIN CONTENT ── */
+.main{flex:1;padding:32px;max-width:1200px;margin:0 auto;width:100%}
+
+/* ── PANELS (tab content) ── */
+.panel{display:none}
+.panel.active{display:block;animation:fadeIn 0.25s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+/* ══════════════════════════════════════════════
+   SEARCH
+══════════════════════════════════════════════ */
+.hero{text-align:center;margin-bottom:40px;padding-top:8px}
+.hero-label{
+  font-size:0.72rem;letter-spacing:0.2em;text-transform:uppercase;
+  color:var(--text3);margin-bottom:12px;
+}
+.hero-title{
+  font-size:2.6rem;font-weight:800;
+  background:linear-gradient(135deg,var(--gold2),var(--gold),#a87c2a);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+  margin-bottom:6px;line-height:1.1;
+}
+.hero-arabic{
+  font-family:'Noto Naskh Arabic',serif;
+  font-size:1.3rem;color:var(--gold-dim);
+  margin-bottom:20px;
+}
+.hero-desc{font-size:0.88rem;color:var(--text2);max-width:500px;margin:0 auto}
+
+.search-box{
+  background:var(--surface);
+  border:1px solid var(--border2);
+  border-radius:var(--r);
+  padding:24px;
+  margin-bottom:16px;
+}
+.search-row{display:flex;gap:10px;margin-bottom:14px}
+.search-input{
+  flex:1;
+  background:var(--bg);border:1px solid var(--border2);
+  border-radius:var(--r-sm);
+  padding:13px 18px;
+  color:var(--text);font-family:var(--sans);font-size:0.95rem;
+  outline:none;transition:border-color 0.2s;
+}
+.search-input:focus{border-color:var(--gold-dim);box-shadow:0 0 0 3px var(--gold-glow)}
+.search-input::placeholder{color:var(--text3)}
+.btn-primary{
+  background:linear-gradient(135deg,var(--gold),#a87c2a);
+  color:#080c10;border:none;border-radius:var(--r-sm);
+  padding:13px 24px;font-family:var(--sans);font-size:0.88rem;font-weight:700;
+  cursor:pointer;letter-spacing:0.04em;text-transform:uppercase;
+  transition:opacity 0.2s,transform 0.1s;white-space:nowrap;
+}
+.btn-primary:hover{opacity:0.9}
+.btn-primary:active{transform:scale(0.98)}
+.btn-primary:disabled{opacity:0.35;cursor:default}
+
+.chips-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chips-label{font-size:0.7rem;color:var(--text3);letter-spacing:0.06em;text-transform:uppercase}
+.chip{
+  background:none;border:1px solid var(--border2);border-radius:20px;
+  padding:4px 12px;font-size:0.75rem;color:var(--text2);
+  cursor:pointer;font-family:var(--mono);transition:all 0.15s;
+}
+.chip:hover{border-color:var(--gold-dim);color:var(--gold2);background:var(--gold-glow)}
+
+/* ══════════════════════════════════════════════
+   RESULT CARD
+══════════════════════════════════════════════ */
+#resultSection{display:none}
+#resultSection.visible{display:block;animation:fadeIn 0.3s ease}
+
+.result-card{
+  background:var(--surface);border:1px solid var(--border2);border-radius:var(--r);
+  overflow:hidden;margin-bottom:20px;
+}
+
+/* verdict stripe */
+.verdict-stripe{
+  padding:20px 28px;
+  display:flex;align-items:center;gap:20px;
+  border-bottom:1px solid var(--border);
+}
+.verdict-stripe.halal  {background:var(--green-glow);border-left:4px solid var(--green)}
+.verdict-stripe.doubtful{background:var(--amber-glow);border-left:4px solid var(--amber)}
+.verdict-stripe.haram  {background:var(--red-glow);  border-left:4px solid var(--red)}
+
+.verdict-icon{font-size:2rem;line-height:1}
+.verdict-info{flex:1}
+.verdict-name{font-size:1.5rem;font-weight:800;letter-spacing:-0.01em}
+.verdict-stripe.halal   .verdict-name{color:var(--green)}
+.verdict-stripe.doubtful .verdict-name{color:var(--amber)}
+.verdict-stripe.haram   .verdict-name{color:var(--red)}
+.verdict-reason{font-size:0.8rem;color:var(--text2);margin-top:3px}
+.verdict-badges{display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap}
+
+.badge{
+  padding:5px 14px;border-radius:20px;
+  font-size:0.72rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;
+  font-family:var(--mono);
+}
+.badge-low   {background:#0a2e1a;color:var(--green);border:1px solid #16613360}
+.badge-medium{background:#2d1f00;color:var(--amber);border:1px solid #78350f60}
+.badge-high  {background:#2d0c0c;color:var(--red);  border:1px solid #7f1d1d60}
+.badge-rec{background:var(--surface3);color:var(--text);border:1px solid var(--border2)}
+
+/* company header */
+.company-header{
+  padding:20px 28px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:16px;
+}
+.company-ticker{
+  font-family:var(--mono);font-size:1.4rem;font-weight:500;
+  color:var(--gold);
+}
+.company-name{font-size:1.1rem;font-weight:600;color:var(--text)}
+.company-sector{font-size:0.78rem;color:var(--text2);margin-top:2px}
+.fetched-time{font-size:0.68rem;color:var(--text3);margin-left:auto;font-family:var(--mono)}
+
+/* price row */
+.price-row{
+  padding:20px 28px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:32px;flex-wrap:wrap;
+}
+.price-main{font-size:2rem;font-weight:700;font-family:var(--mono);color:var(--text)}
+.price-change{font-size:0.95rem;font-weight:600;font-family:var(--mono)}
+.price-change.up{color:var(--green)}
+.price-change.down{color:var(--red)}
+.price-meta{display:flex;gap:24px;margin-left:auto;flex-wrap:wrap}
+.price-meta-item{text-align:right}
+.price-meta-label{font-size:0.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em}
+.price-meta-value{font-size:0.88rem;font-family:var(--mono);color:var(--text);margin-top:2px}
+
+/* ── SPARKLINE ── */
+.chart-section{
+  padding:20px 28px;border-bottom:1px solid var(--border);
+}
+.section-label{
+  font-size:0.68rem;letter-spacing:0.12em;text-transform:uppercase;
+  color:var(--text3);margin-bottom:14px;
+}
+.sparkline-wrap{position:relative;height:80px}
+.sparkline-wrap canvas{width:100%!important;height:80px!important}
+.spark-range{
+  display:flex;justify-content:space-between;
+  font-size:0.68rem;font-family:var(--mono);color:var(--text3);
+  margin-top:6px;
+}
+
+/* ── METRICS GRID ── */
+.metrics-section{padding:20px 28px;border-bottom:1px solid var(--border)}
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.metric-cell{
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--r-sm);padding:12px 14px;
+}
+.metric-label{font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text3);margin-bottom:6px}
+.metric-value{font-size:1rem;font-weight:600;font-family:var(--mono);color:var(--text)}
+.metric-value.pass{color:var(--green)}
+.metric-value.warn{color:var(--amber)}
+.metric-value.fail{color:var(--red)}
+
+/* ── SHARIAH CHECKS ── */
+.checks-section{padding:20px 28px;border-bottom:1px solid var(--border)}
+.check-item{
+  display:flex;gap:14px;padding:12px 16px;
+  border-radius:var(--r-sm);margin-bottom:8px;
+  border:1px solid transparent;
+}
+.check-item.pass{background:var(--green-glow);border-color:#22d06b20}
+.check-item.warn{background:var(--amber-glow);border-color:#f0a50020}
+.check-item.fail{background:var(--red-glow);  border-color:#f04f4f20}
+.check-icon{font-size:1.1rem;flex-shrink:0;margin-top:1px}
+.check-body{flex:1}
+.check-name{font-size:0.85rem;font-weight:600;color:var(--text)}
+.check-detail{font-size:0.78rem;color:var(--text2);margin-top:3px;line-height:1.5}
+
+/* ── INVEST SECTION ── */
+.invest-section{padding:20px 28px}
+.invest-title{font-size:0.85rem;font-weight:700;color:var(--text);margin-bottom:14px}
+.invest-desc{font-size:0.8rem;color:var(--text2);margin-bottom:16px;line-height:1.6}
+.brokers-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.broker-card{
+  background:var(--surface2);border:1px solid var(--border2);
+  border-radius:var(--r-sm);padding:16px;
+  text-decoration:none;
+  transition:border-color 0.2s,background 0.2s;
+  display:flex;flex-direction:column;gap:8px;
+  cursor:pointer;
+}
+.broker-card:hover{border-color:var(--gold-dim);background:var(--surface3)}
+.broker-name{font-size:0.9rem;font-weight:700;color:var(--gold)}
+.broker-tagline{font-size:0.75rem;color:var(--text2)}
+.broker-tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:4px}
+.broker-tag{
+  font-size:0.65rem;padding:2px 8px;border-radius:10px;
+  background:var(--surface3);color:var(--text3);border:1px solid var(--border);
+}
+.broker-tag.halal{background:var(--green-dim);color:var(--green);border-color:#22d06b30}
+.broker-link-row{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-top:auto;padding-top:8px;border-top:1px solid var(--border);
+}
+.broker-link-label{font-size:0.72rem;color:var(--teal)}
+.broker-arrow{color:var(--text3);font-size:0.9rem}
+
+/* ── WATCHLIST PANEL ── */
+.watchlist-header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:20px;
+}
+.page-title{font-size:1.4rem;font-weight:700;color:var(--text)}
+.page-title span{color:var(--gold)}
+.btn-sm{
+  background:var(--surface2);border:1px solid var(--border2);
+  border-radius:var(--r-sm);padding:8px 16px;
+  font-family:var(--sans);font-size:0.78rem;font-weight:600;
+  color:var(--text2);cursor:pointer;transition:all 0.15s;
+}
+.btn-sm:hover{color:var(--text);border-color:var(--border)}
+.btn-sm.danger:hover{color:var(--red);border-color:var(--red-dim)}
+
+.wl-empty{
+  text-align:center;padding:60px 20px;
+  color:var(--text3);font-size:0.9rem;
+}
+.wl-empty-icon{font-size:2.5rem;margin-bottom:12px}
+
+.wl-table{width:100%;border-collapse:collapse}
+.wl-table th{
+  text-align:left;padding:8px 14px;
+  font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;
+  color:var(--text3);border-bottom:1px solid var(--border);
+  font-weight:600;
+}
+.wl-table td{
+  padding:14px;border-bottom:1px solid var(--border);
+  font-size:0.85rem;vertical-align:middle;
+}
+.wl-table tr:last-child td{border-bottom:none}
+.wl-table tr:hover td{background:var(--surface2)}
+.wl-ticker{font-family:var(--mono);font-weight:600;color:var(--gold);font-size:0.9rem}
+.wl-name{color:var(--text2);font-size:0.78rem;margin-top:2px}
+.wl-price{font-family:var(--mono);font-weight:500}
+.wl-change.up{color:var(--green);font-family:var(--mono);font-size:0.82rem}
+.wl-change.down{color:var(--red);font-family:var(--mono);font-size:0.82rem}
+.verdict-pill{
+  display:inline-block;padding:3px 10px;border-radius:10px;
+  font-size:0.68rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;
+}
+.verdict-pill.halal   {background:var(--green-dim);color:var(--green)}
+.verdict-pill.doubtful{background:var(--amber-dim);color:var(--amber)}
+.verdict-pill.haram   {background:var(--red-dim);  color:var(--red)}
+.wl-actions{display:flex;gap:6px;justify-content:flex-end}
+.wl-btn{
+  background:none;border:1px solid var(--border);border-radius:var(--r-sm);
+  padding:5px 10px;font-size:0.72rem;cursor:pointer;color:var(--text2);
+  font-family:var(--sans);transition:all 0.15s;
+}
+.wl-btn:hover{background:var(--surface2);color:var(--text)}
+.wl-btn.del:hover{color:var(--red);border-color:var(--red-dim)}
+.refresh-indicator{
+  font-size:0.72rem;color:var(--text3);font-family:var(--mono);
+}
+
+/* ── BROKERS PANEL ── */
+.brokers-panel .section-header{margin-bottom:24px}
+.brokers-panel .section-header h2{font-size:1.4rem;font-weight:700;margin-bottom:6px}
+.brokers-panel .section-header p{font-size:0.85rem;color:var(--text2);line-height:1.6}
+.full-broker-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.full-broker-card{
+  background:var(--surface);border:1px solid var(--border2);
+  border-radius:var(--r);padding:24px;
+}
+.fbr-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px}
+.fbr-name{font-size:1.1rem;font-weight:700;color:var(--gold)}
+.fbr-badge{
+  font-size:0.65rem;padding:3px 10px;border-radius:10px;
+  font-weight:700;letter-spacing:0.05em;text-transform:uppercase;
+}
+.fbr-badge.recommended{background:var(--green-dim);color:var(--green);border:1px solid #22d06b30}
+.fbr-badge.popular{background:var(--surface3);color:var(--text2);border:1px solid var(--border)}
+.fbr-desc{font-size:0.82rem;color:var(--text2);line-height:1.6;margin-bottom:16px}
+.fbr-specs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px}
+.fbr-spec{background:var(--surface2);border-radius:var(--r-sm);padding:10px 12px}
+.fbr-spec-label{font-size:0.62rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text3);margin-bottom:3px}
+.fbr-spec-value{font-size:0.82rem;font-weight:600;color:var(--text);font-family:var(--mono)}
+.fbr-tags{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:16px}
+.fbr-open-btn{
+  display:block;width:100%;text-align:center;
+  background:linear-gradient(135deg,var(--gold),#a87c2a);
+  color:#080c10;border:none;border-radius:var(--r-sm);
+  padding:11px;font-family:var(--sans);font-size:0.82rem;font-weight:700;
+  cursor:pointer;text-decoration:none;letter-spacing:0.04em;text-transform:uppercase;
+  transition:opacity 0.2s;
+}
+.fbr-open-btn:hover{opacity:0.9}
+
+/* ── HOW TO INVEST ── */
+.how-panel .steps{display:flex;flex-direction:column;gap:16px;margin-top:24px}
+.step{
+  display:flex;gap:20px;
+  background:var(--surface);border:1px solid var(--border2);
+  border-radius:var(--r);padding:20px 24px;
+}
+.step-num{
+  width:36px;height:36px;border-radius:50%;
+  background:var(--gold-glow);border:1px solid var(--gold-dim);
+  display:grid;place-items:center;
+  font-size:0.9rem;font-weight:700;color:var(--gold);
+  flex-shrink:0;
+}
+.step-title{font-size:0.95rem;font-weight:700;color:var(--text);margin-bottom:5px}
+.step-desc{font-size:0.82rem;color:var(--text2);line-height:1.6}
+.step-link{
+  display:inline-block;margin-top:8px;
+  font-size:0.75rem;color:var(--teal);text-decoration:none;
+}
+.step-link:hover{text-decoration:underline}
+
+/* ── LOADER ── */
+#loader{display:none;text-align:center;padding:32px}
+#loader.visible{display:block}
+.loader-ring{
+  display:inline-block;width:36px;height:36px;
+  border:2px solid var(--border2);border-top-color:var(--gold);
+  border-radius:50%;animation:spin 0.7s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loader-text{font-size:0.82rem;color:var(--text2);margin-top:12px}
+
+/* ── DISCLAIMER BAR ── */
+.disclaimer{
+  border-top:1px solid var(--border);
+  padding:12px 32px;
+  font-size:0.72rem;color:var(--text3);text-align:center;
+  background:var(--surface);
+}
+
+/* ── TOAST ── */
+.toast{
+  position:fixed;bottom:24px;right:24px;z-index:999;
+  background:var(--surface2);border:1px solid var(--border2);
+  border-radius:var(--r-sm);padding:12px 20px;
+  font-size:0.82rem;color:var(--text);
+  transform:translateY(80px);opacity:0;
+  transition:all 0.3s ease;
+}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.success{border-color:var(--green);color:var(--green)}
+.toast.error{border-color:var(--red);color:var(--red)}
+
+@media(max-width:700px){
+  .topbar{padding:0 16px}
+  .main{padding:16px}
+  .nav-tab span{display:none}
+  .price-row{gap:16px}
+  .price-meta{margin-left:0;width:100%}
+}
+</style>
+</head>
+<body>
+
+<!-- Geometric background -->
+<div class="geo-bg">
+  <svg viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+    <defs>
+      <pattern id="geo" x="0" y="0" width="100" height="100" patternUnits="userSpaceOnUse">
+        <polygon points="50,5 61,35 95,35 68,55 79,85 50,65 21,85 32,55 5,35 39,35" fill="none" stroke="#c8a951" stroke-width="0.5"/>
+        <polygon points="50,22 57,40 77,40 62,51 68,69 50,58 32,69 38,51 23,40 43,40" fill="none" stroke="#c8a951" stroke-width="0.3"/>
+      </pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#geo)"/>
+  </svg>
+</div>
+
+<div class="app">
+
+  <!-- ═══ TOPBAR ═══ -->
+  <header class="topbar">
+    <a class="logo" href="#" onclick="showPanel('screen');return false">
+      <div class="logo-icon">
+        <svg viewBox="0 0 18 18" fill="none">
+          <path d="M9 1.5L10.8 6.5H16L11.7 9.7L13.5 14.7L9 11.5L4.5 14.7L6.3 9.7L2 6.5H7.2L9 1.5Z" stroke="#c8a951" stroke-width="1.2" fill="none"/>
+        </svg>
+      </div>
+      <span class="logo-text">Mizan</span>
+    </a>
+    <div class="nav-tabs">
+      <button class="nav-tab active" id="tab-screen"  onclick="showPanel('screen')"><span>🔍 </span>Screen</button>
+      <button class="nav-tab"        id="tab-watchlist" onclick="showPanel('watchlist')"><span>📋 </span>Watchlist</button>
+      <button class="nav-tab"        id="tab-brokers" onclick="showPanel('brokers')"><span>🏦 </span>Brokers</button>
+      <button class="nav-tab"        id="tab-howto"   onclick="showPanel('howto')"><span>📖 </span>How To Invest</button>
+    </div>
+  </header>
+
+  <!-- ═══ MAIN ═══ -->
+  <main class="main">
+
+    <!-- ══ SCREEN PANEL ══ -->
+    <section class="panel active" id="panel-screen">
+
+      <div class="hero">
+        <div class="hero-label">Bursa Malaysia · Real-Time Data</div>
+        <h1 class="hero-title">Halal Stock Screener</h1>
+        <div class="hero-arabic">ميزان — The Balance</div>
+        <p class="hero-desc">Live Shariah screening with real financial data from Yahoo Finance. Research before you invest.</p>
+      </div>
+
+      <div class="search-box">
+        <div class="search-row">
+          <input id="searchInput" class="search-input"
+            type="text"
+            placeholder="Enter stock code or name  e.g.  1295  ·  MAYBANK  ·  Tenaga"
+            autocomplete="off" autocorrect="off" spellcheck="false"/>
+          <button class="btn-primary" id="screenBtn" onclick="runScreen()">Screen →</button>
+        </div>
+        <div class="chips-row">
+          <span class="chips-label">Try:</span>
+          <button class="chip" onclick="quickSearch('1295')">1295 · PBBank</button>
+          <button class="chip" onclick="quickSearch('1155')">1155 · Maybank</button>
+          <button class="chip" onclick="quickSearch('5347')">5347 · Tenaga</button>
+          <button class="chip" onclick="quickSearch('4197')">4197 · IHH</button>
+          <button class="chip" onclick="quickSearch('5168')">5168 · MHB</button>
+          <button class="chip" onclick="quickSearch('7277')">7277 · Dialog</button>
+          <button class="chip" onclick="quickSearch('6012')">6012 · Maxis</button>
+          <button class="chip" onclick="quickSearch('5183')">5183 · Petronas Gas</button>
+        </div>
+      </div>
+
+      <!-- Loader -->
+      <div id="loader">
+        <div class="loader-ring"></div>
+        <div class="loader-text">Fetching live data from Yahoo Finance…</div>
+      </div>
+
+      <!-- Result -->
+      <div id="resultSection">
+        <div class="result-card">
+
+          <!-- Verdict stripe -->
+          <div id="verdictStripe" class="verdict-stripe">
+            <div class="verdict-icon" id="vIcon"></div>
+            <div class="verdict-info">
+              <div class="verdict-name" id="vName"></div>
+              <div class="verdict-reason" id="vReason"></div>
+            </div>
+            <div class="verdict-badges" id="vBadges"></div>
+          </div>
+
+          <!-- Company header -->
+          <div class="company-header">
+            <div>
+              <div class="company-ticker" id="cTicker"></div>
+              <div class="company-name"   id="cName"></div>
+              <div class="company-sector" id="cSector"></div>
+            </div>
+            <div class="fetched-time" id="cTime"></div>
+          </div>
+
+          <!-- Price -->
+          <div class="price-row">
+            <div>
+              <div class="price-main" id="pPrice"></div>
+              <div class="price-change" id="pChange"></div>
+            </div>
+            <div class="price-meta" id="pMeta"></div>
+          </div>
+
+          <!-- Chart -->
+          <div class="chart-section">
+            <div class="section-label">6-Month Price History</div>
+            <div class="sparkline-wrap">
+              <canvas id="sparkCanvas"></canvas>
+            </div>
+            <div class="spark-range" id="sparkRange"></div>
+          </div>
+
+          <!-- Metrics -->
+          <div class="metrics-section">
+            <div class="section-label">Key Financial Metrics</div>
+            <div class="metrics-grid" id="metricsGrid"></div>
+          </div>
+
+          <!-- Checks -->
+          <div class="checks-section">
+            <div class="section-label">Shariah Screening — 4 Criteria</div>
+            <div id="checksList"></div>
+          </div>
+
+          <!-- Invest -->
+          <div class="invest-section">
+            <div class="invest-title">Ready to invest? Choose a Bursa Malaysia broker:</div>
+            <div class="invest-desc">This tool helps you research. Once you've decided, open your broker account and place the trade there. The links below open each broker's platform with Bursa Malaysia selected.</div>
+            <div class="brokers-grid" id="investBrokers"></div>
+            <div style="margin-top:14px;font-size:0.75rem;color:var(--text3)">
+              ⚠ No account yet? Visit the <strong style="color:var(--text2);cursor:pointer" onclick="showPanel('brokers')">Brokers tab</strong> for a full comparison.
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Watchlist button -->
+        <div style="text-align:center;margin-bottom:32px">
+          <button class="btn-primary" id="addWlBtn" onclick="addToWatchlist()">+ Add to Watchlist</button>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ══ WATCHLIST PANEL ══ -->
+    <section class="panel" id="panel-watchlist">
+      <div class="watchlist-header">
+        <h1 class="page-title">My <span>Watchlist</span></h1>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="refresh-indicator" id="wlLastRefresh"></span>
+          <button class="btn-sm" onclick="refreshWatchlist()">↺ Refresh All</button>
+        </div>
+      </div>
+      <div id="wlContent">
+        <div class="wl-empty">
+          <div class="wl-empty-icon">📋</div>
+          Screen a stock and click "Add to Watchlist" to track it here.
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ BROKERS PANEL ══ -->
+    <section class="panel brokers-panel" id="panel-brokers">
+      <div class="section-header">
+        <h2 class="page-title">Bursa Malaysia <span>Brokers</span></h2>
+        <p>All brokers below are licensed by the Securities Commission Malaysia and Bursa Malaysia. They offer online trading platforms for you to buy and sell stocks after you've done your research here.</p>
+      </div>
+      <div class="full-broker-grid" id="fullBrokerGrid"></div>
+    </section>
+
+    <!-- ══ HOW TO INVEST PANEL ══ -->
+    <section class="panel how-panel" id="panel-howto">
+      <div>
+        <h2 class="page-title">How To <span>Invest</span> — Step by Step</h2>
+        <p style="margin-top:8px;font-size:0.85rem;color:var(--text2);max-width:580px">A clear, halal-conscious guide to investing in Bursa Malaysia stocks as a beginner.</p>
+      </div>
+      <div class="steps" id="stepsList"></div>
+    </section>
+
+  </main>
+
+  <!-- ═══ FOOTER ═══ -->
+  <footer class="disclaimer">
+    ⚠ <strong>Disclaimer:</strong> Mizan is for educational and research purposes only. This is <strong>NOT financial advice</strong>. Always consult a qualified Islamic finance scholar and a licensed financial advisor before investing. Data sourced from Yahoo Finance — may have delays. Shariah determinations are scholarly matters; verify with certified Shariah bodies (e.g. SC Malaysia SAC, ISRA).
+  </footer>
+
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════
+   STATE
+══════════════════════════════════════════════════════════ */
+let currentData      = null;
+let currentScreening = null;
+let watchlist        = JSON.parse(localStorage.getItem('mizan_wl') || '[]');
+
+/* ══════════════════════════════════════════════════════════
+   CONSTANTS
+══════════════════════════════════════════════════════════ */
+const DEBT_THRESHOLD   = 0.33;
+const INCOME_THRESHOLD = 0.05;
+
+const HARAM_KEYWORDS = [
+  'alcohol','beer','wine','spirit','brew','distill','liquor',
+  'tobacco','cigarette','cigar','vape',
+  'casino','gambling','lottery','bet','gaming resort',
+  'pork','swine','pig',
+  'adult entertainment','pornograph',
+  'conventional bank','money lending','pawnshop',
+  'weapon','arms manufacture','defence contractor','ammunition',
+  'insurance underwriting'
+];
+
+const DOUBTFUL_SECTORS = [
+  'financial services','diversified financial',
+  'media','entertainment',
+  'food & beverage','beverages','hospitality','hotel'
+];
+
+const BROKERS = [
+  {
+    name:'Rakuten Trade',
+    tagline:'100% online, low brokerage fees, good for beginners',
+    desc:'Malaysia\'s first fully digital online broker. No minimum balance. Competitive fees starting from MYR 7 per trade. Mobile app available.',
+    minDeposit:'MYR 0',
+    fee:'MYR 7 or 0.1% min',
+    shariah:'Shariah-compliant securities list available',
+    platform:'Web + Mobile App',
+    recommended:true,
+    url:'https://www.rakutentrade.my',
+    tags:['Beginner Friendly','No Min Deposit','Mobile App','Halal Stocks Listed']
+  },
+  {
+    name:'Mplus Online',
+    tagline:'Established broker with full research support',
+    desc:'Part of Malacca Securities. Offers in-depth research reports, Shariah-compliant stock filters, and both web and mobile trading.',
+    minDeposit:'MYR 1,000',
+    fee:'0.1% min MYR 8',
+    shariah:'Built-in Shariah filter',
+    platform:'Web + Mobile App',
+    recommended:false,
+    url:'https://www.mplusonline.com.my',
+    tags:['Research Reports','Shariah Filter','Established','Mobile App']
+  },
+  {
+    name:'Kenanga iTrade',
+    tagline:'Full-service broker with Islamic account option',
+    desc:'One of Malaysia\'s largest brokers. Offers Islamic trading account (no interest on outstanding contra). Strong research team.',
+    minDeposit:'MYR 1,000',
+    fee:'0.1% min MYR 8',
+    shariah:'Islamic account available',
+    platform:'Web + Mobile App',
+    recommended:false,
+    url:'https://www.kenanga.com.my',
+    tags:['Islamic Account','Full Service','Large Broker','Research']
+  },
+  {
+    name:'myETF (i-VCAP)',
+    tagline:'Shariah-compliant ETFs — easiest halal investing',
+    desc:'If you don\'t want to pick individual stocks, myETF offers pre-screened Shariah-compliant ETFs like MyETF MSCI Malaysia Islamic Dividend. Very low risk, diversified.',
+    minDeposit:'MYR 100',
+    fee:'Very low (ETF fees)',
+    shariah:'100% Shariah-compliant by design',
+    platform:'Web',
+    recommended:false,
+    url:'https://www.myetf.com.my',
+    tags:['Shariah ETF','Diversified','Lowest Risk','Beginner Safe']
+  }
+];
+
+const STEPS = [
+  {
+    title:'Educate yourself on halal investing principles',
+    desc:'Understand the key rules: no riba (interest), no gharar (excessive uncertainty), no maysir (gambling), and avoid haram industries. The Accounting and Auditing Organisation for Islamic Financial Institutions (AAOIFI) sets the global standard.',
+    link:'https://aaoifi.com',
+    linkLabel:'AAOIFI Standards →'
+  },
+  {
+    title:'Open a brokerage account',
+    desc:'Choose a broker licensed by the Securities Commission Malaysia. Rakuten Trade is recommended for beginners — fully online, no minimum deposit, and you can open an account in under 30 minutes with your MyKad and bank details.',
+    link:'https://www.rakutentrade.my',
+    linkLabel:'Open Rakuten Trade account →'
+  },
+  {
+    title:'Fund your account',
+    desc:'Transfer money from your bank account (FPX, online banking) into your brokerage account. Start with whatever you\'re comfortable losing entirely — never invest money you need. A common beginner amount is MYR 1,000–5,000.',
+    link:null
+  },
+  {
+    title:'Research stocks using Mizan',
+    desc:'Use the Screener on this app to check if a stock is halal-compliant before buying. Look for: Potentially Halal verdict, Low or Medium risk, positive P/E ratio, positive profit margins, and a dividend yield for passive income.',
+    link:null
+  },
+  {
+    title:'Check the SC Malaysia Shariah-compliant securities list',
+    desc:'The Securities Commission Malaysia publishes an official list of Shariah-compliant securities twice a year. Always cross-check your stock against this list — it\'s the definitive Malaysian authority.',
+    link:'https://www.sc.com.my/development/islamic-capital-market/shariah-compliant-securities',
+    linkLabel:'SC Malaysia Shariah List →'
+  },
+  {
+    title:'Place your trade on your broker\'s platform',
+    desc:'Once you\'ve done your research here, log into your broker, search for the stock by its Bursa code (e.g. 1295 for Public Bank), choose the number of shares, select a "Market Order" (buy at current price) or "Limit Order" (buy only if it hits your target price), and confirm.',
+    link:null
+  },
+  {
+    title:'Hold for the long term — avoid speculation',
+    desc:'Islam discourages excessive buying and selling (speculation). The halal approach is to invest in real businesses you believe in and hold them long-term (months to years). Day trading is considered highly speculative (gharar) and is best avoided.',
+    link:null
+  },
+  {
+    title:'Purify your dividends if uncertain',
+    desc:'If a stock passes screening but has a small amount of non-permissible income (e.g. 2% interest income), many scholars recommend "purifying" your dividend by donating that percentage to charity. For example: if you receive MYR 100 dividend and the stock has 2% impure income, donate MYR 2.',
+    link:null
+  }
+];
+
+/* ══════════════════════════════════════════════════════════
+   SCREENING ENGINE (pure JS — no server needed)
+══════════════════════════════════════════════════════════ */
+function screenHalal(data) {
+  const checks   = [];
+  const issues   = [];
+  const warnings = [];
+
+  const combined = [
+    data.sector, data.industry, data.name, data.description
+  ].join(' ').toLowerCase();
+
+  // ── Check 1: Industry ──────────────────────────────────
+  let haramKw = null;
+  for (const kw of HARAM_KEYWORDS) {
+    if (combined.includes(kw)) { haramKw = kw; break; }
+  }
+
+  if (haramKw) {
+    checks.push({ status:'fail', name:'Business Activity / Industry',
+      detail:`Keyword "${haramKw}" detected in sector or industry description. The primary business involves a categorically prohibited activity.` });
+    issues.push('haram_industry');
+  } else {
+    let ds = DOUBTFUL_SECTORS.find(s => combined.includes(s));
+    if (ds) {
+      checks.push({ status:'warn', name:'Business Activity / Industry',
+        detail:`Sector "${data.sector}" requires additional verification. Not categorically haram, but may have mixed income sources. Verify manually against SC Malaysia Shariah list.` });
+      warnings.push('doubtful_sector');
+    } else {
+      checks.push({ status:'pass', name:'Business Activity / Industry',
+        detail:`Sector (${data.sector || 'N/A'}) and industry (${data.industry || 'N/A'}) do not match any categorically prohibited activity.` });
+    }
+  }
+
+  // ── Check 2: Debt ratio ────────────────────────────────
+  const dr = data.debtRatio;
+  if (dr == null) {
+    checks.push({ status:'warn', name:'Debt-to-Assets Ratio (AAOIFI: ≤ 33%)',
+      detail:'Balance sheet data not available for this ticker. Verify the debt ratio manually via Bursa Malaysia company disclosures or annual report.' });
+    warnings.push('no_debt_data');
+  } else if (dr > DEBT_THRESHOLD) {
+    const sev = dr > 0.50 ? 'fail' : 'warn';
+    checks.push({ status:sev, name:'Debt-to-Assets Ratio (AAOIFI: ≤ 33%)',
+      detail:`Ratio is ${(dr*100).toFixed(1)}% — ${dr>0.50?'significantly ':'marginally '}exceeds the AAOIFI 33% threshold. High interest-bearing debt (riba) exposure.` });
+    sev === 'fail' ? issues.push('high_debt') : warnings.push('marginal_debt');
+  } else {
+    checks.push({ status:'pass', name:'Debt-to-Assets Ratio (AAOIFI: ≤ 33%)',
+      detail:`Ratio is ${(dr*100).toFixed(1)}% — within the permissible 33% limit.` });
+  }
+
+  // ── Check 3: Non-permissible income ───────────────────
+  const ir = data.interestRatio;
+  if (ir == null) {
+    checks.push({ status:'warn', name:'Non-Permissible Revenue (DJIM: ≤ 5%)',
+      detail:'Income data not available. Verify interest income manually via annual report.' });
+    warnings.push('no_income_data');
+  } else if (ir > INCOME_THRESHOLD) {
+    const sev = ir > 0.20 ? 'fail' : 'warn';
+    checks.push({ status:sev, name:'Non-Permissible Revenue (DJIM: ≤ 5%)',
+      detail:`Estimated interest/non-permissible income is ~${(ir*100).toFixed(1)}% of revenue — ${ir>0.20?'well above':'above'} the 5% DJIM limit.` });
+    sev === 'fail' ? issues.push('high_interest') : warnings.push('marginal_interest');
+  } else {
+    checks.push({ status:'pass', name:'Non-Permissible Revenue (DJIM: ≤ 5%)',
+      detail:`Estimated interest income is ~${(ir*100).toFixed(1)}% of revenue — within the permissible 5% limit.` });
+  }
+
+  // ── Check 4: Gharar / speculation ─────────────────────
+  const pe = data.peRatio;
+  if (pe !== null && pe < 0) {
+    checks.push({ status:'warn', name:'Gharar Check — Real Value Creation',
+      detail:`Negative P/E ratio (${pe?.toFixed(1)}) — company is currently loss-making. Investing in a loss-making company increases speculative risk (gharar). Proceed with caution.` });
+    warnings.push('loss_making');
+  } else {
+    checks.push({ status:'pass', name:'Gharar Check — Real Value Creation',
+      detail:`Company appears to generate positive economic value.${pe ? ` P/E ratio: ${pe.toFixed(1)}x.` : ' P/E data unavailable.'}` });
+  }
+
+  // ── Verdict ────────────────────────────────────────────
+  let verdict, vClass, vIcon, vReason;
+  if (issues.length > 0) {
+    verdict = 'Not Halal'; vClass = 'haram'; vIcon = '✗';
+    vReason = 'Fails one or more categorical Shariah screening criteria.';
+  } else if (warnings.length > 0) {
+    verdict = 'Doubtful'; vClass = 'doubtful'; vIcon = '◐';
+    vReason = 'Borderline on some criteria. Consult a qualified Islamic finance scholar.';
+  } else {
+    verdict = 'Potentially Halal'; vClass = 'halal'; vIcon = '✓';
+    vReason = 'Passes standard Shariah screening. Always verify with a scholar.';
+  }
+
+  const risk = assessRisk(data, issues, warnings);
+  const rec  = recommend(data, verdict, risk);
+
+  return { verdict, vClass, vIcon, vReason, checks, issues, warnings, risk, rec };
+}
+
+function assessRisk(data, issues, warnings) {
+  if (issues.length) return 'HIGH';
+  let s = 0;
+  const dr = data.debtRatio || 0;
+  if (dr > 0.25) s += 2; else if (dr > 0.15) s += 1;
+  const pm = data.profitMargin || 0;
+  if (pm < 0) s += 2; else if (pm < 0.05) s += 1;
+  const hi = data.week52High || 0, lo = data.week52Low || 1, px = data.price || 1;
+  const spread = (hi - lo) / px;
+  if (spread > 0.6) s += 2; else if (spread > 0.3) s += 1;
+  s += warnings.length;
+  if (s >= 4) return 'HIGH';
+  if (s >= 2) return 'MEDIUM';
+  return 'LOW';
+}
+
+function recommend(data, verdict, risk) {
+  if (verdict === 'Not Halal') return 'AVOID';
+  if (verdict === 'Doubtful')  return 'CAUTION — Seek Scholar';
+  const pe = data.peRatio, pb = data.pbRatio;
+  const pm = data.profitMargin || 0, roe = data.returnOnEquity || 0;
+  let pos = 0;
+  if (pe && pe > 5 && pe < 20) pos++;
+  if (pb && pb < 1.5) pos++;
+  if (pm > 0.10) pos++;
+  if (roe > 0.12) pos++;
+  if (risk === 'LOW' && pos >= 3) return 'BUY — Strong Fundamentals';
+  if (risk === 'LOW') return 'HOLD / MONITOR';
+  if (risk === 'MEDIUM') return 'HOLD — Diversify';
+  return 'CAUTION — High Volatility';
+}
+
+/* ══════════════════════════════════════════════════════════
+   DATA FETCHING via Yahoo Finance (through allorigins proxy)
+══════════════════════════════════════════════════════════ */
+async function fetchStockData(symbol) {
+  // Normalise to Bursa .KL ticker
+  let ticker = symbol.toUpperCase().trim();
+  if (!ticker.endsWith('.KL')) {
+    ticker = (ticker.replace(/\D/g,'').padStart(4,'0') || ticker) + '.KL';
+    // If it was letters (name-style), just append .KL
+    if (!/^\d/.test(symbol.trim())) ticker = symbol.trim().toUpperCase() + '.KL';
+  }
+
+  // Yahoo Finance v8 quote endpoint via allorigins proxy (avoids CORS)
+  const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1mo&range=6mo`;
+  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(yUrl)}`;
+
+  const resp = await fetch(proxy);
+  if (!resp.ok) throw new Error('Network error. Check your internet connection.');
+  const outer = await resp.json();
+  const raw   = JSON.parse(outer.contents);
+
+  const chart = raw?.chart;
+  if (chart?.error) throw new Error(chart.error.description || 'Ticker not found.');
+  if (!chart?.result?.[0]) throw new Error(`No data found for "${ticker}". Check the stock code.`);
+
+  const r    = chart.result[0];
+  const meta = r.meta;
+  const quotes = r.indicators?.quote?.[0] || {};
+  const timestamps = r.timestamp || [];
+  const closes     = quotes.close || [];
+
+  // Build history array (monthly)
+  const history = timestamps.map((ts, i) => ({
+    date : new Date(ts * 1000).toLocaleDateString('en-MY', {month:'short', year:'2-digit'}),
+    close: closes[i]
+  })).filter(h => h.close != null);
+
+  // Now fetch fundamentals via v10 endpoint
+  const fUrl  = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=defaultKeyStatistics,financialData,summaryProfile,summaryDetail`;
+  const fProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(fUrl)}`;
+  let info = {};
+  try {
+    const fr   = await fetch(fProxy);
+    const fOuter = await fr.json();
+    const fRaw   = JSON.parse(fOuter.contents);
+    const qs     = fRaw?.quoteSummary?.result?.[0];
+    if (qs) {
+      const fd = qs.financialData || {};
+      const ks = qs.defaultKeyStatistics || {};
+      const sp = qs.summaryProfile || {};
+      const sd = qs.summaryDetail || {};
+      info = {
+        name:            meta.longName || meta.shortName || ticker,
+        sector:          sp.sector || 'N/A',
+        industry:        sp.industry || 'N/A',
+        description:     (sp.longBusinessSummary || '').slice(0,400),
+        totalDebt:       fd.totalDebt?.raw,
+        totalAssets:     ks.totalAssets?.raw || fd.totalCash?.raw,
+        totalRevenue:    fd.totalRevenue?.raw,
+        interestExpense: fd.interestExpense?.raw,
+        profitMargin:    fd.profitMargins?.raw,
+        returnOnEquity:  fd.returnOnEquity?.raw,
+        returnOnAssets:  fd.returnOnAssets?.raw,
+        peRatio:         ks.trailingEps?.raw ? (meta.regularMarketPrice / ks.trailingEps.raw) : null,
+        pbRatio:         ks.priceToBook?.raw,
+        dividendYield:   sd.dividendYield?.raw,
+        bookValue:       ks.bookValue?.raw,
+      };
+    }
+  } catch(e) { /* fundamentals optional */ }
+
+  const price    = meta.regularMarketPrice || closes[closes.length-1] || 0;
+  const prevClose= meta.chartPreviousClose || meta.previousClose || price;
+  const changePct= ((price - prevClose) / prevClose) * 100;
+
+  const totalDebt  = info.totalDebt || 0;
+  const totalAssets= info.totalAssets || 0;
+  const totalRev   = info.totalRevenue || 0;
+  const intExp     = Math.abs(info.interestExpense || 0);
+
+  return {
+    ticker,
+    name:           info.name   || meta.longName || meta.shortName || ticker,
+    sector:         info.sector || 'N/A',
+    industry:       info.industry || 'N/A',
+    description:    info.description || '',
+    price,
+    prevClose,
+    changePct,
+    week52High:     meta.fiftyTwoWeekHigh || 0,
+    week52Low:      meta.fiftyTwoWeekLow  || 0,
+    volume:         meta.regularMarketVolume || 0,
+    marketCap:      meta.marketCap || 0,
+    currency:       meta.currency || 'MYR',
+    totalDebt,
+    totalAssets,
+    totalRevenue:   totalRev,
+    interestExpense:intExp,
+    debtRatio:      totalAssets ? totalDebt / totalAssets : null,
+    interestRatio:  totalRev ? intExp / totalRev : null,
+    profitMargin:   info.profitMargin,
+    returnOnEquity: info.returnOnEquity,
+    returnOnAssets: info.returnOnAssets,
+    peRatio:        info.peRatio || null,
+    pbRatio:        info.pbRatio || null,
+    dividendYield:  info.dividendYield || null,
+    history,
+    fetchedAt:      new Date().toLocaleTimeString('en-MY'),
+  };
+}
+
+/* ══════════════════════════════════════════════════════════
+   DISPLAY
+══════════════════════════════════════════════════════════ */
+function fmyMYR(v) {
+  if (v == null || v === 0) return 'N/A';
+  if (v >= 1e9) return `MYR ${(v/1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `MYR ${(v/1e6).toFixed(2)}M`;
+  if (v >= 1e3) return `MYR ${(v/1e3).toFixed(1)}K`;
+  return `MYR ${v.toFixed(2)}`;
+}
+function fmtPct(v)   { return v == null ? 'N/A' : `${(v*100).toFixed(1)}%`; }
+function fmtNum(v,d=1){ return v == null ? 'N/A' : v.toFixed(d); }
+
+function renderResult(data, screening) {
+  const s = screening;
+
+  // Verdict stripe
+  const vs = document.getElementById('verdictStripe');
+  vs.className = `verdict-stripe ${s.vClass}`;
+  document.getElementById('vIcon').textContent = s.vIcon;
+  document.getElementById('vName').textContent = s.verdict;
+  document.getElementById('vReason').textContent = s.vReason;
+
+  const riskCls = {LOW:'badge-low',MEDIUM:'badge-medium',HIGH:'badge-high'}[s.risk]||'badge-medium';
+  const recText = s.rec.length > 20 ? s.rec.slice(0,20)+'…' : s.rec;
+  document.getElementById('vBadges').innerHTML =
+    `<span class="badge ${riskCls}">${s.risk} Risk</span>
+     <span class="badge badge-rec">${recText}</span>`;
+
+  // Company header
+  document.getElementById('cTicker').textContent = data.ticker;
+  document.getElementById('cName').textContent   = data.name;
+  document.getElementById('cSector').textContent = `${data.sector} · ${data.industry}`;
+  document.getElementById('cTime').textContent   = `Live · ${data.fetchedAt}`;
+
+  // Price
+  const upDown = data.changePct >= 0;
+  document.getElementById('pPrice').textContent = `MYR ${data.price.toFixed(4)}`;
+  const pch = document.getElementById('pChange');
+  pch.textContent = `${upDown?'▲':'▼'} ${Math.abs(data.changePct).toFixed(2)}% today`;
+  pch.className = `price-change ${upDown?'up':'down'}`;
+
+  document.getElementById('pMeta').innerHTML = `
+    <div class="price-meta-item">
+      <div class="price-meta-label">52w High</div>
+      <div class="price-meta-value">MYR ${data.week52High.toFixed(4)}</div>
+    </div>
+    <div class="price-meta-item">
+      <div class="price-meta-label">52w Low</div>
+      <div class="price-meta-value">MYR ${data.week52Low.toFixed(4)}</div>
+    </div>
+    <div class="price-meta-item">
+      <div class="price-meta-label">Volume</div>
+      <div class="price-meta-value">${data.volume ? data.volume.toLocaleString() : 'N/A'}</div>
+    </div>
+    <div class="price-meta-item">
+      <div class="price-meta-label">Market Cap</div>
+      <div class="price-meta-value">${fmyMYR(data.marketCap)}</div>
+    </div>`;
+
+  // Sparkline
+  drawSparkline(data.history);
+
+  // Metrics
+  const metrics = [
+    { label:'Debt / Assets', value: data.debtRatio != null ? fmtPct(data.debtRatio) : 'N/A',
+      cls: data.debtRatio == null ? '' : data.debtRatio > 0.33 ? (data.debtRatio > 0.5 ? 'fail':'warn') : 'pass' },
+    { label:'Interest / Revenue', value: data.interestRatio != null ? fmtPct(data.interestRatio) : 'N/A',
+      cls: data.interestRatio == null ? '' : data.interestRatio > 0.05 ? (data.interestRatio > 0.2 ? 'fail':'warn') : 'pass' },
+    { label:'P/E Ratio',    value: data.peRatio  != null ? `${fmtNum(data.peRatio)}x`  : 'N/A', cls:'' },
+    { label:'P/B Ratio',    value: data.pbRatio  != null ? `${fmtNum(data.pbRatio,2)}x`: 'N/A', cls:'' },
+    { label:'Profit Margin',value: fmtPct(data.profitMargin),
+      cls: data.profitMargin == null ? '' : data.profitMargin < 0 ? 'fail' : data.profitMargin > 0.1 ? 'pass' : '' },
+    { label:'Return on Equity', value: fmtPct(data.returnOnEquity),
+      cls: data.returnOnEquity == null ? '' : data.returnOnEquity > 0.12 ? 'pass' : '' },
+    { label:'Return on Assets', value: fmtPct(data.returnOnAssets), cls:'' },
+    { label:'Dividend Yield',   value: fmtPct(data.dividendYield), cls:'' },
+    { label:'Total Assets',     value: fmyMYR(data.totalAssets), cls:'' },
+    { label:'Total Debt',       value: fmyMYR(data.totalDebt), cls:'' },
+    { label:'Total Revenue',    value: fmyMYR(data.totalRevenue), cls:'' },
+  ];
+  document.getElementById('metricsGrid').innerHTML = metrics.map(m =>
+    `<div class="metric-cell">
+       <div class="metric-label">${m.label}</div>
+       <div class="metric-value ${m.cls}">${m.value}</div>
+     </div>`).join('');
+
+  // Checks
+  const icons = { pass:'✓', warn:'◐', fail:'✗' };
+  document.getElementById('checksList').innerHTML = s.checks.map(c =>
+    `<div class="check-item ${c.status}">
+       <div class="check-icon">${icons[c.status]}</div>
+       <div class="check-body">
+         <div class="check-name">${c.name}</div>
+         <div class="check-detail">${c.detail}</div>
+       </div>
+     </div>`).join('');
+
+  // Invest brokers (compact)
+  document.getElementById('investBrokers').innerHTML = BROKERS.map(b =>
+    `<div class="broker-card" onclick="window.open('${b.url}','_blank')">
+       <div class="broker-name">${b.name}</div>
+       <div class="broker-tagline">${b.tagline}</div>
+       <div class="broker-tags">
+         ${b.tags.slice(0,3).map(t=>`<span class="broker-tag${t.includes('Halal')||t.includes('Shariah')||t.includes('Islamic')?' halal':''}">${t}</span>`).join('')}
+       </div>
+       <div class="broker-link-row">
+         <span class="broker-link-label">Open account →</span>
+       </div>
+     </div>`).join('');
+
+  document.getElementById('resultSection').classList.add('visible');
+  document.getElementById('resultSection').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+/* ── SPARKLINE CANVAS ── */
+function drawSparkline(history) {
+  const canvas = document.getElementById('sparkCanvas');
+  const wrap   = canvas.parentElement;
+  canvas.width  = wrap.clientWidth || 600;
+  canvas.height = 80;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  const prices = history.map(h => h.close).filter(Boolean);
+  if (prices.length < 2) {
+    ctx.fillStyle = '#4a5a6a';
+    ctx.font = '12px IBM Plex Mono';
+    ctx.fillText('Price history not available', 10, 40);
+    return;
+  }
+
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const rng = max - min || 1;
+  const W = canvas.width, H = 70, pad = 4;
+
+  // Gradient fill
+  const grad = ctx.createLinearGradient(0, pad, 0, H);
+  grad.addColorStop(0, 'rgba(200,169,81,0.3)');
+  grad.addColorStop(1, 'rgba(200,169,81,0)');
+
+  ctx.beginPath();
+  prices.forEach((p, i) => {
+    const x = (i / (prices.length - 1)) * (W - 20) + 10;
+    const y = H - ((p - min) / rng) * (H - pad * 2) - pad;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  // Close for fill
+  const lastX = (prices.length - 1) / (prices.length - 1) * (W - 20) + 10;
+  ctx.lineTo(lastX, H);
+  ctx.lineTo(10, H);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  prices.forEach((p, i) => {
+    const x = (i / (prices.length - 1)) * (W - 20) + 10;
+    const y = H - ((p - min) / rng) * (H - pad * 2) - pad;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#c8a951';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Range labels
+  document.getElementById('sparkRange').innerHTML =
+    `<span>Low: MYR ${min.toFixed(4)}</span>
+     <span style="color:var(--text3)">${history[0]?.date || ''} → ${history[history.length-1]?.date || ''}</span>
+     <span>High: MYR ${max.toFixed(4)}</span>`;
+}
+
+/* ══════════════════════════════════════════════════════════
+   ACTIONS
+══════════════════════════════════════════════════════════ */
+async function runScreen() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) { showToast('Enter a stock code or name', 'error'); return; }
+
+  document.getElementById('resultSection').classList.remove('visible');
+  document.getElementById('loader').classList.add('visible');
+  document.getElementById('screenBtn').disabled = true;
+
+  try {
+    currentData     = await fetchStockData(q);
+    currentScreening = screenHalal(currentData);
+    document.getElementById('loader').classList.remove('visible');
+    document.getElementById('screenBtn').disabled = false;
+    renderResult(currentData, currentScreening);
+  } catch(err) {
+    document.getElementById('loader').classList.remove('visible');
+    document.getElementById('screenBtn').disabled = false;
+    showToast(`Error: ${err.message}`, 'error');
+    console.error(err);
+  }
+}
+
+function quickSearch(code) {
+  document.getElementById('searchInput').value = code;
+  runScreen();
+}
+
+function addToWatchlist() {
+  if (!currentData || !currentScreening) return;
+  const entry = {
+    ticker:    currentData.ticker,
+    name:      currentData.name,
+    sector:    currentData.sector,
+    verdict:   currentScreening.verdict,
+    vClass:    currentScreening.vClass,
+    risk:      currentScreening.risk,
+    rec:       currentScreening.rec,
+    price:     currentData.price,
+    changePct: currentData.changePct,
+    addedAt:   new Date().toLocaleDateString('en-MY'),
+  };
+  watchlist = watchlist.filter(e => e.ticker !== entry.ticker);
+  watchlist.push(entry);
+  localStorage.setItem('mizan_wl', JSON.stringify(watchlist));
+  showToast(`✓ ${currentData.ticker} added to watchlist`, 'success');
+  renderWatchlist();
+}
+
+function removeFromWatchlist(ticker) {
+  watchlist = watchlist.filter(e => e.ticker !== ticker);
+  localStorage.setItem('mizan_wl', JSON.stringify(watchlist));
+  renderWatchlist();
+  showToast(`Removed ${ticker}`, '');
+}
+
+async function refreshWatchlist() {
+  if (!watchlist.length) return;
+  showToast('Refreshing live prices…');
+  for (let i = 0; i < watchlist.length; i++) {
+    try {
+      const d = await fetchStockData(watchlist[i].ticker.replace('.KL',''));
+      const sc = screenHalal(d);
+      watchlist[i].price     = d.price;
+      watchlist[i].changePct = d.changePct;
+      watchlist[i].verdict   = sc.verdict;
+      watchlist[i].vClass    = sc.vClass;
+      watchlist[i].risk      = sc.risk;
+      watchlist[i].rec       = sc.rec;
+    } catch(e) { /* skip if error */ }
+  }
+  localStorage.setItem('mizan_wl', JSON.stringify(watchlist));
+  document.getElementById('wlLastRefresh').textContent =
+    `Last refresh: ${new Date().toLocaleTimeString('en-MY')}`;
+  renderWatchlist();
+  showToast('✓ Watchlist refreshed', 'success');
+}
+
+function screenFromWatchlist(ticker) {
+  showPanel('screen');
+  document.getElementById('searchInput').value = ticker.replace('.KL','');
+  runScreen();
+}
+
+/* ══════════════════════════════════════════════════════════
+   RENDER WATCHLIST
+══════════════════════════════════════════════════════════ */
+function renderWatchlist() {
+  const el = document.getElementById('wlContent');
+  if (!watchlist.length) {
+    el.innerHTML = `<div class="wl-empty">
+      <div class="wl-empty-icon">📋</div>
+      No stocks in watchlist yet. Screen a stock and click "Add to Watchlist".
+    </div>`;
+    return;
+  }
+  el.innerHTML = `
+    <table class="wl-table">
+      <thead><tr>
+        <th>Stock</th><th>Price</th><th>Change</th>
+        <th>Verdict</th><th>Risk</th><th>Recommendation</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${watchlist.map(e => {
+          const up   = e.changePct >= 0;
+          const rCls = {LOW:'badge-low',MEDIUM:'badge-medium',HIGH:'badge-high'}[e.risk]||'badge-medium';
+          return `<tr>
+            <td>
+              <div class="wl-ticker">${e.ticker}</div>
+              <div class="wl-name">${(e.name||'').slice(0,32)}</div>
+            </td>
+            <td class="wl-price">MYR ${e.price?.toFixed(4)||'—'}</td>
+            <td class="${'wl-change '+(up?'up':'down')}">${up?'▲':'▼'} ${Math.abs(e.changePct||0).toFixed(2)}%</td>
+            <td><span class="verdict-pill ${e.vClass||''}">${e.verdict||'—'}</span></td>
+            <td><span class="badge ${rCls}">${e.risk||'—'}</span></td>
+            <td style="font-size:0.75rem;color:var(--text2);max-width:160px">${e.rec||'—'}</td>
+            <td>
+              <div class="wl-actions">
+                <button class="wl-btn" onclick="screenFromWatchlist('${e.ticker}')">View</button>
+                <button class="wl-btn del" onclick="removeFromWatchlist('${e.ticker}')">✕</button>
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
+
+/* ══════════════════════════════════════════════════════════
+   RENDER BROKERS
+══════════════════════════════════════════════════════════ */
+function renderBrokers() {
+  document.getElementById('fullBrokerGrid').innerHTML = BROKERS.map(b => `
+    <div class="full-broker-card">
+      <div class="fbr-header">
+        <div class="fbr-name">${b.name}</div>
+        <span class="fbr-badge ${b.recommended?'recommended':'popular'}">${b.recommended?'★ Recommended':'Popular'}</span>
+      </div>
+      <p class="fbr-desc">${b.desc}</p>
+      <div class="fbr-specs">
+        <div class="fbr-spec"><div class="fbr-spec-label">Min Deposit</div><div class="fbr-spec-value">${b.minDeposit}</div></div>
+        <div class="fbr-spec"><div class="fbr-spec-label">Brokerage Fee</div><div class="fbr-spec-value">${b.fee}</div></div>
+        <div class="fbr-spec"><div class="fbr-spec-label">Shariah</div><div class="fbr-spec-value" style="font-size:0.72rem">${b.shariah}</div></div>
+        <div class="fbr-spec"><div class="fbr-spec-label">Platform</div><div class="fbr-spec-value" style="font-size:0.72rem">${b.platform}</div></div>
+      </div>
+      <div class="fbr-tags">${b.tags.map(t=>`<span class="broker-tag${t.includes('Halal')||t.includes('Shariah')||t.includes('Islamic')?' halal':''}">${t}</span>`).join('')}</div>
+      <a class="fbr-open-btn" href="${b.url}" target="_blank" rel="noopener">Open Account at ${b.name} →</a>
+    </div>`).join('');
+}
+
+/* ══════════════════════════════════════════════════════════
+   RENDER HOW TO INVEST
+══════════════════════════════════════════════════════════ */
+function renderSteps() {
+  document.getElementById('stepsList').innerHTML = STEPS.map((s, i) => `
+    <div class="step">
+      <div class="step-num">${i+1}</div>
+      <div>
+        <div class="step-title">${s.title}</div>
+        <div class="step-desc">${s.desc}</div>
+        ${s.link ? `<a class="step-link" href="${s.link}" target="_blank" rel="noopener">${s.linkLabel}</a>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+/* ══════════════════════════════════════════════════════════
+   NAVIGATION
+══════════════════════════════════════════════════════════ */
+function showPanel(id) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(`panel-${id}`).classList.add('active');
+  document.getElementById(`tab-${id}`).classList.add('active');
+  if (id === 'watchlist') renderWatchlist();
+  if (id === 'brokers')   renderBrokers();
+  if (id === 'howto')     renderSteps();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+/* ══════════════════════════════════════════════════════════
+   TOAST
+══════════════════════════════════════════════════════════ */
+function showToast(msg, type='') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast ${type} show`;
+  setTimeout(() => t.className = 'toast', 3000);
+}
+
+/* ══════════════════════════════════════════════════════════
+   KEYBOARD
+══════════════════════════════════════════════════════════ */
+document.getElementById('searchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runScreen();
+});
+
+/* ══════════════════════════════════════════════════════════
+   INIT
+══════════════════════════════════════════════════════════ */
+renderWatchlist();
+</script>
+</body>
+</html>
