@@ -926,51 +926,71 @@ function recommend(data, verdict, risk) {
 }
 
 /* ══════════════════════════════════════════════════════════
-   DATA FETCHING via Yahoo Finance (through allorigins proxy)
+   DATA FETCHING via Yahoo Finance (multi-proxy fallback)
 ══════════════════════════════════════════════════════════ */
+
+// Try 4 CORS proxies in order — automatically falls back if one fails
+async function fetchViaProxy(targetUrl) {
+  const proxies = [
+    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+    u => `https://thingproxy.freeboard.io/fetch/${encodeURIComponent(u)}`,
+  ];
+  let lastErr = null;
+  for (const makeProxy of proxies) {
+    try {
+      const resp = await fetch(makeProxy(targetUrl), { signal: AbortSignal.timeout(8000) });
+      if (!resp.ok) continue;
+      const text = await resp.text();
+      let parsed;
+      try {
+        const json = JSON.parse(text);
+        // allorigins wraps response in {contents:...}, others return raw JSON
+        parsed = (json.contents !== undefined)
+          ? (typeof json.contents === 'string' ? JSON.parse(json.contents) : json.contents)
+          : json;
+      } catch { continue; }
+      return parsed;
+    } catch(e) { lastErr = e; }
+  }
+  throw new Error('All data proxies failed. Please check your internet connection.');
+}
+
 async function fetchStockData(symbol) {
   // Normalise to Bursa .KL ticker
   let ticker = symbol.toUpperCase().trim();
   if (!ticker.endsWith('.KL')) {
     ticker = (ticker.replace(/\D/g,'').padStart(4,'0') || ticker) + '.KL';
-    // If it was letters (name-style), just append .KL
     if (!/^\d/.test(symbol.trim())) ticker = symbol.trim().toUpperCase() + '.KL';
   }
 
-  // Yahoo Finance v8 quote endpoint via allorigins proxy (avoids CORS)
+  // Fetch price + 6-month chart
   const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1mo&range=6mo`;
-  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(yUrl)}`;
-
-  const resp = await fetch(proxy);
-  if (!resp.ok) throw new Error('Network error. Check your internet connection.');
-  const outer = await resp.json();
-  const raw   = JSON.parse(outer.contents);
+  const raw  = await fetchViaProxy(yUrl);
 
   const chart = raw?.chart;
   if (chart?.error) throw new Error(chart.error.description || 'Ticker not found.');
   if (!chart?.result?.[0]) throw new Error(`No data found for "${ticker}". Check the stock code.`);
 
-  const r    = chart.result[0];
-  const meta = r.meta;
-  const quotes = r.indicators?.quote?.[0] || {};
+  const r          = chart.result[0];
+  const meta       = r.meta;
+  const quotes     = r.indicators?.quote?.[0] || {};
   const timestamps = r.timestamp || [];
   const closes     = quotes.close || [];
 
-  // Build history array (monthly)
+  // Build monthly history array
   const history = timestamps.map((ts, i) => ({
     date : new Date(ts * 1000).toLocaleDateString('en-MY', {month:'short', year:'2-digit'}),
     close: closes[i]
   })).filter(h => h.close != null);
 
-  // Now fetch fundamentals via v10 endpoint
-  const fUrl  = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=defaultKeyStatistics,financialData,summaryProfile,summaryDetail`;
-  const fProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(fUrl)}`;
+  // Fetch fundamentals (best-effort — price data still shows if this fails)
+  const fUrl = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=defaultKeyStatistics,financialData,summaryProfile,summaryDetail`;
   let info = {};
   try {
-    const fr   = await fetch(fProxy);
-    const fOuter = await fr.json();
-    const fRaw   = JSON.parse(fOuter.contents);
-    const qs     = fRaw?.quoteSummary?.result?.[0];
+    const fRaw = await fetchViaProxy(fUrl);
+    const qs   = fRaw?.quoteSummary?.result?.[0];
     if (qs) {
       const fd = qs.financialData || {};
       const ks = qs.defaultKeyStatistics || {};
