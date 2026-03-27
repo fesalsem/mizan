@@ -545,7 +545,7 @@ body::before{
       <!-- Loader -->
       <div id="loader">
         <div class="loader-ring"></div>
-        <div class="loader-text">Fetching live data from Yahoo Finance…</div>
+        <div class="loader-text">Fetching live data via backend… (first load may take ~10 seconds)</div>
       </div>
 
       <!-- Result -->
@@ -798,223 +798,34 @@ const STEPS = [
 ];
 
 /* ══════════════════════════════════════════════════════════
-   SCREENING ENGINE (pure JS — no server needed)
-══════════════════════════════════════════════════════════ */
-function screenHalal(data) {
-  const checks   = [];
-  const issues   = [];
-  const warnings = [];
-
-  const combined = [
-    data.sector, data.industry, data.name, data.description
-  ].join(' ').toLowerCase();
-
-  // ── Check 1: Industry ──────────────────────────────────
-  let haramKw = null;
-  for (const kw of HARAM_KEYWORDS) {
-    if (combined.includes(kw)) { haramKw = kw; break; }
-  }
-
-  if (haramKw) {
-    checks.push({ status:'fail', name:'Business Activity / Industry',
-      detail:`Keyword "${haramKw}" detected in sector or industry description. The primary business involves a categorically prohibited activity.` });
-    issues.push('haram_industry');
-  } else {
-    let ds = DOUBTFUL_SECTORS.find(s => combined.includes(s));
-    if (ds) {
-      checks.push({ status:'warn', name:'Business Activity / Industry',
-        detail:`Sector "${data.sector}" requires additional verification. Not categorically haram, but may have mixed income sources. Verify manually against SC Malaysia Shariah list.` });
-      warnings.push('doubtful_sector');
-    } else {
-      checks.push({ status:'pass', name:'Business Activity / Industry',
-        detail:`Sector (${data.sector || 'N/A'}) and industry (${data.industry || 'N/A'}) do not match any categorically prohibited activity.` });
-    }
-  }
-
-  // ── Check 2: Debt ratio ────────────────────────────────
-  const dr = data.debtRatio;
-  if (dr == null) {
-    checks.push({ status:'warn', name:'Debt-to-Assets Ratio (AAOIFI: ≤ 33%)',
-      detail:'Balance sheet data not available for this ticker. Verify the debt ratio manually via Bursa Malaysia company disclosures or annual report.' });
-    warnings.push('no_debt_data');
-  } else if (dr > DEBT_THRESHOLD) {
-    const sev = dr > 0.50 ? 'fail' : 'warn';
-    checks.push({ status:sev, name:'Debt-to-Assets Ratio (AAOIFI: ≤ 33%)',
-      detail:`Ratio is ${(dr*100).toFixed(1)}% — ${dr>0.50?'significantly ':'marginally '}exceeds the AAOIFI 33% threshold. High interest-bearing debt (riba) exposure.` });
-    sev === 'fail' ? issues.push('high_debt') : warnings.push('marginal_debt');
-  } else {
-    checks.push({ status:'pass', name:'Debt-to-Assets Ratio (AAOIFI: ≤ 33%)',
-      detail:`Ratio is ${(dr*100).toFixed(1)}% — within the permissible 33% limit.` });
-  }
-
-  // ── Check 3: Non-permissible income ───────────────────
-  const ir = data.interestRatio;
-  if (ir == null) {
-    checks.push({ status:'warn', name:'Non-Permissible Revenue (DJIM: ≤ 5%)',
-      detail:'Income data not available. Verify interest income manually via annual report.' });
-    warnings.push('no_income_data');
-  } else if (ir > INCOME_THRESHOLD) {
-    const sev = ir > 0.20 ? 'fail' : 'warn';
-    checks.push({ status:sev, name:'Non-Permissible Revenue (DJIM: ≤ 5%)',
-      detail:`Estimated interest/non-permissible income is ~${(ir*100).toFixed(1)}% of revenue — ${ir>0.20?'well above':'above'} the 5% DJIM limit.` });
-    sev === 'fail' ? issues.push('high_interest') : warnings.push('marginal_interest');
-  } else {
-    checks.push({ status:'pass', name:'Non-Permissible Revenue (DJIM: ≤ 5%)',
-      detail:`Estimated interest income is ~${(ir*100).toFixed(1)}% of revenue — within the permissible 5% limit.` });
-  }
-
-  // ── Check 4: Gharar / speculation ─────────────────────
-  const pe = data.peRatio;
-  if (pe !== null && pe < 0) {
-    checks.push({ status:'warn', name:'Gharar Check — Real Value Creation',
-      detail:`Negative P/E ratio (${pe?.toFixed(1)}) — company is currently loss-making. Investing in a loss-making company increases speculative risk (gharar). Proceed with caution.` });
-    warnings.push('loss_making');
-  } else {
-    checks.push({ status:'pass', name:'Gharar Check — Real Value Creation',
-      detail:`Company appears to generate positive economic value.${pe ? ` P/E ratio: ${pe.toFixed(1)}x.` : ' P/E data unavailable.'}` });
-  }
-
-  // ── Verdict ────────────────────────────────────────────
-  let verdict, vClass, vIcon, vReason;
-  if (issues.length > 0) {
-    verdict = 'Not Halal'; vClass = 'haram'; vIcon = '✗';
-    vReason = 'Fails one or more categorical Shariah screening criteria.';
-  } else if (warnings.length > 0) {
-    verdict = 'Doubtful'; vClass = 'doubtful'; vIcon = '◐';
-    vReason = 'Borderline on some criteria. Consult a qualified Islamic finance scholar.';
-  } else {
-    verdict = 'Potentially Halal'; vClass = 'halal'; vIcon = '✓';
-    vReason = 'Passes standard Shariah screening. Always verify with a scholar.';
-  }
-
-  const risk = assessRisk(data, issues, warnings);
-  const rec  = recommend(data, verdict, risk);
-
-  return { verdict, vClass, vIcon, vReason, checks, issues, warnings, risk, rec };
-}
-
-function assessRisk(data, issues, warnings) {
-  if (issues.length) return 'HIGH';
-  let s = 0;
-  const dr = data.debtRatio || 0;
-  if (dr > 0.25) s += 2; else if (dr > 0.15) s += 1;
-  const pm = data.profitMargin || 0;
-  if (pm < 0) s += 2; else if (pm < 0.05) s += 1;
-  const hi = data.week52High || 0, lo = data.week52Low || 1, px = data.price || 1;
-  const spread = (hi - lo) / px;
-  if (spread > 0.6) s += 2; else if (spread > 0.3) s += 1;
-  s += warnings.length;
-  if (s >= 4) return 'HIGH';
-  if (s >= 2) return 'MEDIUM';
-  return 'LOW';
-}
-
-function recommend(data, verdict, risk) {
-  if (verdict === 'Not Halal') return 'AVOID';
-  if (verdict === 'Doubtful')  return 'CAUTION — Seek Scholar';
-  const pe = data.peRatio, pb = data.pbRatio;
-  const pm = data.profitMargin || 0, roe = data.returnOnEquity || 0;
-  let pos = 0;
-  if (pe && pe > 5 && pe < 20) pos++;
-  if (pb && pb < 1.5) pos++;
-  if (pm > 0.10) pos++;
-  if (roe > 0.12) pos++;
-  if (risk === 'LOW' && pos >= 3) return 'BUY — Strong Fundamentals';
-  if (risk === 'LOW') return 'HOLD / MONITOR';
-  if (risk === 'MEDIUM') return 'HOLD — Diversify';
-  return 'CAUTION — High Volatility';
-}
-
-/* ══════════════════════════════════════════════════════════
-   DATA FETCHING via Yahoo Finance (multi-proxy fallback)
+   API — talks to local Python backend (server.py)
 ══════════════════════════════════════════════════════════ */
 
-// Try 4 CORS proxies in order — automatically falls back if one fails
-async function fetchViaProxy(targetUrl) {
-  const proxies = [
-    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-    u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
-    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-    u => `https://thingproxy.freeboard.io/fetch/${encodeURIComponent(u)}`,
-  ];
-  let lastErr = null;
-  for (const makeProxy of proxies) {
-    try {
-      const resp = await fetch(makeProxy(targetUrl), { signal: AbortSignal.timeout(8000) });
-      if (!resp.ok) continue;
-      const text = await resp.text();
-      let parsed;
-      try {
-        const json = JSON.parse(text);
-        // allorigins wraps response in {contents:...}, others return raw JSON
-        parsed = (json.contents !== undefined)
-          ? (typeof json.contents === 'string' ? JSON.parse(json.contents) : json.contents)
-          : json;
-      } catch { continue; }
-      return parsed;
-    } catch(e) { lastErr = e; }
-  }
-  throw new Error('All data proxies failed. Please check your internet connection.');
-}
+const API = 'http://localhost:5000';
 
 async function fetchStockData(symbol) {
-  // Normalise to Bursa .KL ticker
-  let ticker = symbol.toUpperCase().trim();
-  if (!ticker.endsWith('.KL')) {
-    ticker = (ticker.replace(/\D/g,'').padStart(4,'0') || ticker) + '.KL';
-    if (!/^\d/.test(symbol.trim())) ticker = symbol.trim().toUpperCase() + '.KL';
-  }
-
-  // Fetch price + 6-month chart
-  const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1mo&range=6mo`;
-  const raw  = await fetchViaProxy(yUrl);
-
-  const chart = raw?.chart;
-  if (chart?.error) throw new Error(chart.error.description || 'Ticker not found.');
-  if (!chart?.result?.[0]) throw new Error(`No data found for "${ticker}". Check the stock code.`);
-
-  const r          = chart.result[0];
-  const meta       = r.meta;
-  const quotes     = r.indicators?.quote?.[0] || {};
-  const timestamps = r.timestamp || [];
-  const closes     = quotes.close || [];
-
-  // Build monthly history array
-  const history = timestamps.map((ts, i) => ({
-    date : new Date(ts * 1000).toLocaleDateString('en-MY', {month:'short', year:'2-digit'}),
-    close: closes[i]
-  })).filter(h => h.close != null);
-
-  // Fetch fundamentals (best-effort — price data still shows if this fails)
-  const fUrl = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=defaultKeyStatistics,financialData,summaryProfile,summaryDetail`;
-  let info = {};
+  // Check backend is running first
+  let health;
   try {
-    const fRaw = await fetchViaProxy(fUrl);
-    const qs   = fRaw?.quoteSummary?.result?.[0];
-    if (qs) {
-      const fd = qs.financialData || {};
-      const ks = qs.defaultKeyStatistics || {};
-      const sp = qs.summaryProfile || {};
-      const sd = qs.summaryDetail || {};
-      info = {
-        name:            meta.longName || meta.shortName || ticker,
-        sector:          sp.sector || 'N/A',
-        industry:        sp.industry || 'N/A',
-        description:     (sp.longBusinessSummary || '').slice(0,400),
-        totalDebt:       fd.totalDebt?.raw,
-        totalAssets:     ks.totalAssets?.raw || fd.totalCash?.raw,
-        totalRevenue:    fd.totalRevenue?.raw,
-        interestExpense: fd.interestExpense?.raw,
-        profitMargin:    fd.profitMargins?.raw,
-        returnOnEquity:  fd.returnOnEquity?.raw,
-        returnOnAssets:  fd.returnOnAssets?.raw,
-        peRatio:         ks.trailingEps?.raw ? (meta.regularMarketPrice / ks.trailingEps.raw) : null,
-        pbRatio:         ks.priceToBook?.raw,
-        dividendYield:   sd.dividendYield?.raw,
-        bookValue:       ks.bookValue?.raw,
-      };
-    }
-  } catch(e) { /* fundamentals optional */ }
+    health = await fetch(`${API}/health`, { signal: AbortSignal.timeout(3000) });
+  } catch(e) {
+    throw new Error(
+      'Cannot connect to the Mizan backend.\n\n' +
+      'Please run this in your terminal first:\n' +
+      '  python server.py\n\n' +
+      'Keep that window open while using the app.'
+    );
+  }
+  if (!health.ok) throw new Error('Backend server error. Restart server.py.');
+
+  const resp = await fetch(
+    `${API}/screen?symbol=${encodeURIComponent(symbol.trim())}`,
+    { signal: AbortSignal.timeout(30000) }
+  );
+  const json = await resp.json();
+  if (!json.ok) throw new Error(json.error || 'Failed to fetch stock data.');
+  return json.data;  // data + screening already computed by server
+}
 
   const price    = meta.regularMarketPrice || closes[closes.length-1] || 0;
   const prevClose= meta.chartPreviousClose || meta.previousClose || price;
@@ -1242,34 +1053,73 @@ async function runScreen() {
   document.getElementById('screenBtn').disabled = true;
 
   try {
-    currentData     = await fetchStockData(q);
-    currentScreening = screenHalal(currentData);
+    // fetchStockData returns full data including .screening from the backend
+    currentData      = await fetchStockData(q);
+    currentScreening = currentData.screening;
     document.getElementById('loader').classList.remove('visible');
     document.getElementById('screenBtn').disabled = false;
     renderResult(currentData, currentScreening);
   } catch(err) {
     document.getElementById('loader').classList.remove('visible');
     document.getElementById('screenBtn').disabled = false;
-    showToast(`Error: ${err.message}`, 'error');
+    // Show multi-line errors nicely
+    showToast(err.message.split('\n')[0], 'error');
+    if (err.message.includes('server.py')) {
+      document.getElementById('resultSection').classList.remove('visible');
+      showBackendPrompt();
+    }
     console.error(err);
   }
 }
 
+function showBackendPrompt() {
+  // Inline prompt telling user to start the backend
+  let el = document.getElementById('backendPrompt');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'backendPrompt';
+    el.style.cssText = `
+      background:var(--amber-glow);border:1px solid var(--amber);
+      border-radius:var(--r);padding:24px 28px;margin-bottom:20px;
+      font-size:0.88rem;line-height:1.8;color:var(--text);
+    `;
+    document.getElementById('loader').after(el);
+  }
+  el.innerHTML = `
+    <div style="font-size:1rem;font-weight:700;color:var(--amber);margin-bottom:10px">
+      ⚠ Backend server is not running
+    </div>
+    <div style="color:var(--text2);margin-bottom:14px">
+      The app needs the Python backend to fetch real financial data.
+      Open a terminal (Command Prompt) in the same folder as your files and run:
+    </div>
+    <code style="display:block;background:var(--bg);padding:12px 16px;border-radius:6px;
+                 color:var(--gold);font-family:var(--mono);font-size:0.9rem;
+                 border:1px solid var(--border2)">python server.py</code>
+    <div style="color:var(--text3);margin-top:12px;font-size:0.78rem">
+      Keep that terminal window open while using the app. Then try screening again.
+    </div>`;
+  el.style.display = 'block';
+}
+
 function quickSearch(code) {
   document.getElementById('searchInput').value = code;
+  const bp = document.getElementById('backendPrompt');
+  if (bp) bp.style.display = 'none';
   runScreen();
 }
 
 function addToWatchlist() {
   if (!currentData || !currentScreening) return;
+  const s = currentScreening;
   const entry = {
     ticker:    currentData.ticker,
     name:      currentData.name,
     sector:    currentData.sector,
-    verdict:   currentScreening.verdict,
-    vClass:    currentScreening.vClass,
-    risk:      currentScreening.risk,
-    rec:       currentScreening.rec,
+    verdict:   s.verdict,
+    vClass:    s.vClass,
+    risk:      s.risk,
+    rec:       s.rec,
     price:     currentData.price,
     changePct: currentData.changePct,
     addedAt:   new Date().toLocaleDateString('en-MY'),
@@ -1293,15 +1143,15 @@ async function refreshWatchlist() {
   showToast('Refreshing live prices…');
   for (let i = 0; i < watchlist.length; i++) {
     try {
-      const d = await fetchStockData(watchlist[i].ticker.replace('.KL',''));
-      const sc = screenHalal(d);
+      const d  = await fetchStockData(watchlist[i].ticker.replace('.KL',''));
+      const sc = d.screening;
       watchlist[i].price     = d.price;
       watchlist[i].changePct = d.changePct;
       watchlist[i].verdict   = sc.verdict;
       watchlist[i].vClass    = sc.vClass;
       watchlist[i].risk      = sc.risk;
       watchlist[i].rec       = sc.rec;
-    } catch(e) { /* skip if error */ }
+    } catch(e) { /* skip on error */ }
   }
   localStorage.setItem('mizan_wl', JSON.stringify(watchlist));
   document.getElementById('wlLastRefresh').textContent =
