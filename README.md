@@ -1,7 +1,7 @@
 # Mizan — ميزان — Halal Investment Screener
 ### Bursa Malaysia Edition · Real-Time Data · Python Backend
 
-Real-time Shariah-compliant stock screener. Uses a Python backend (yfinance) to fetch genuine financial data — real balance sheets, real debt ratios, real income statements. No fake data, no N/A metrics.
+Real-time Shariah-compliant stock screener. Uses a Python backend (yfinance) to fetch genuine financial data — real balance sheets, real debt ratios, real income statements.
 
 ## Architecture
 
