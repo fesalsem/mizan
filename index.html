@@ -826,47 +826,6 @@ async function fetchStockData(symbol) {
   if (!json.ok) throw new Error(json.error || 'Failed to fetch stock data.');
   return json.data;  // data + screening already computed by server
 }
-
-  const price    = meta.regularMarketPrice || closes[closes.length-1] || 0;
-  const prevClose= meta.chartPreviousClose || meta.previousClose || price;
-  const changePct= ((price - prevClose) / prevClose) * 100;
-
-  const totalDebt  = info.totalDebt || 0;
-  const totalAssets= info.totalAssets || 0;
-  const totalRev   = info.totalRevenue || 0;
-  const intExp     = Math.abs(info.interestExpense || 0);
-
-  return {
-    ticker,
-    name:           info.name   || meta.longName || meta.shortName || ticker,
-    sector:         info.sector || 'N/A',
-    industry:       info.industry || 'N/A',
-    description:    info.description || '',
-    price,
-    prevClose,
-    changePct,
-    week52High:     meta.fiftyTwoWeekHigh || 0,
-    week52Low:      meta.fiftyTwoWeekLow  || 0,
-    volume:         meta.regularMarketVolume || 0,
-    marketCap:      meta.marketCap || 0,
-    currency:       meta.currency || 'MYR',
-    totalDebt,
-    totalAssets,
-    totalRevenue:   totalRev,
-    interestExpense:intExp,
-    debtRatio:      totalAssets ? totalDebt / totalAssets : null,
-    interestRatio:  totalRev ? intExp / totalRev : null,
-    profitMargin:   info.profitMargin,
-    returnOnEquity: info.returnOnEquity,
-    returnOnAssets: info.returnOnAssets,
-    peRatio:        info.peRatio || null,
-    pbRatio:        info.pbRatio || null,
-    dividendYield:  info.dividendYield || null,
-    history,
-    fetchedAt:      new Date().toLocaleTimeString('en-MY'),
-  };
-}
-
 /* ══════════════════════════════════════════════════════════
    DISPLAY
 ══════════════════════════════════════════════════════════ */
