@@ -515,30 +515,36 @@ body::before{
     <section class="panel active" id="panel-screen">
 
       <div class="hero">
-        <div class="hero-label">Bursa Malaysia · Real-Time Data</div>
+        <div class="hero-label">Bursa Malaysia · US · Global Markets · Real-Time Data</div>
         <h1 class="hero-title">Halal Stock Screener</h1>
         <div class="hero-arabic">ميزان — The Balance</div>
-        <p class="hero-desc">Live Shariah screening with real financial data from Yahoo Finance. Research before you invest.</p>
+        <p class="hero-desc">Live Shariah screening for Bursa Malaysia, US (NYSE/NASDAQ), and global stocks. Real financial data from Yahoo Finance.</p>
       </div>
 
       <div class="search-box">
         <div class="search-row">
           <input id="searchInput" class="search-input"
             type="text"
-            placeholder="Enter stock code or name  e.g.  1295  ·  MAYBANK  ·  Tenaga"
+            placeholder="Enter ticker or name  e.g.  TSLA  ·  NVDA  ·  1295  ·  MAYBANK"
             autocomplete="off" autocorrect="off" spellcheck="false"/>
           <button class="btn-primary" id="screenBtn" onclick="runScreen()">Screen →</button>
         </div>
         <div class="chips-row">
-          <span class="chips-label">Try:</span>
+          <span class="chips-label">🇲🇾 Bursa:</span>
           <button class="chip" onclick="quickSearch('1295')">1295 · PBBank</button>
           <button class="chip" onclick="quickSearch('1155')">1155 · Maybank</button>
           <button class="chip" onclick="quickSearch('5347')">5347 · Tenaga</button>
           <button class="chip" onclick="quickSearch('4197')">4197 · IHH</button>
-          <button class="chip" onclick="quickSearch('5168')">5168 · MHB</button>
           <button class="chip" onclick="quickSearch('7277')">7277 · Dialog</button>
-          <button class="chip" onclick="quickSearch('6012')">6012 · Maxis</button>
-          <button class="chip" onclick="quickSearch('5183')">5183 · Petronas Gas</button>
+        </div>
+        <div class="chips-row" style="margin-top:8px">
+          <span class="chips-label">🇺🇸 US:</span>
+          <button class="chip" onclick="quickSearch('TSLA')">TSLA · Tesla</button>
+          <button class="chip" onclick="quickSearch('NVDA')">NVDA · Nvidia</button>
+          <button class="chip" onclick="quickSearch('AAPL')">AAPL · Apple</button>
+          <button class="chip" onclick="quickSearch('MSFT')">MSFT · Microsoft</button>
+          <button class="chip" onclick="quickSearch('GOOGL')">GOOGL · Alphabet</button>
+          <button class="chip" onclick="quickSearch('AMZN')">AMZN · Amazon</button>
         </div>
       </div>
 
@@ -748,6 +754,30 @@ const BROKERS = [
     recommended:false,
     url:'https://www.myetf.com.my',
     tags:['Shariah ETF','Diversified','Lowest Risk','Beginner Safe']
+  },
+  {
+    name:'Interactive Brokers (IBKR)',
+    tagline:'Best for US & global stocks — used by professionals',
+    desc:'Top choice for trading US stocks (TSLA, NVDA, AAPL etc.) from Malaysia. Supports 150+ markets, very low fees, and has an Islamic Finance account option. Fully regulated internationally.',
+    minDeposit:'USD 0',
+    fee:'USD 0 – 0.005/share',
+    shariah:'Islamic account available',
+    platform:'Web + Desktop + Mobile',
+    recommended:true,
+    url:'https://www.interactivebrokers.com',
+    tags:['US Stocks','Global Markets','Islamic Account','Professional']
+  },
+  {
+    name:'Webull',
+    tagline:'Commission-free US stocks — beginner friendly',
+    desc:'Zero-commission trading for US-listed stocks. Good mobile app, real-time data, and paper trading mode to practice without real money. Popular among Malaysian investors for US exposure.',
+    minDeposit:'USD 0',
+    fee:'Commission-free',
+    shariah:'Manual screening required (use Mizan)',
+    platform:'Mobile + Web',
+    recommended:false,
+    url:'https://www.webull.com',
+    tags:['US Stocks','Commission-Free','Mobile App','Beginner Friendly']
   }
 ];
 
@@ -829,13 +859,20 @@ async function fetchStockData(symbol) {
 /* ══════════════════════════════════════════════════════════
    DISPLAY
 ══════════════════════════════════════════════════════════ */
-function fmyMYR(v) {
+// Currency symbol — set when stock data loads
+let CCY = 'MYR';
+
+function fmtCcy(v, ccy) {
+  const c = ccy || CCY;
   if (v == null || v === 0) return 'N/A';
-  if (v >= 1e9) return `MYR ${(v/1e9).toFixed(2)}B`;
-  if (v >= 1e6) return `MYR ${(v/1e6).toFixed(2)}M`;
-  if (v >= 1e3) return `MYR ${(v/1e3).toFixed(1)}K`;
-  return `MYR ${v.toFixed(2)}`;
+  if (v >= 1e12) return `${c} ${(v/1e12).toFixed(2)}T`;
+  if (v >= 1e9)  return `${c} ${(v/1e9).toFixed(2)}B`;
+  if (v >= 1e6)  return `${c} ${(v/1e6).toFixed(2)}M`;
+  if (v >= 1e3)  return `${c} ${(v/1e3).toFixed(1)}K`;
+  return `${c} ${v.toFixed(2)}`;
 }
+// Legacy alias
+function fmyMYR(v) { return fmtCcy(v); }
 function fmtPct(v)   { return v == null ? 'N/A' : `${(v*100).toFixed(1)}%`; }
 function fmtNum(v,d=1){ return v == null ? 'N/A' : v.toFixed(d); }
 
@@ -863,7 +900,8 @@ function renderResult(data, screening) {
 
   // Price
   const upDown = data.changePct >= 0;
-  document.getElementById('pPrice').textContent = `MYR ${data.price.toFixed(4)}`;
+  CCY = data.currency || 'MYR';
+  document.getElementById('pPrice').textContent = `${CCY} ${data.price.toFixed(4)}`;
   const pch = document.getElementById('pChange');
   pch.textContent = `${upDown?'▲':'▼'} ${Math.abs(data.changePct).toFixed(2)}% today`;
   pch.className = `price-change ${upDown?'up':'down'}`;
@@ -871,11 +909,11 @@ function renderResult(data, screening) {
   document.getElementById('pMeta').innerHTML = `
     <div class="price-meta-item">
       <div class="price-meta-label">52w High</div>
-      <div class="price-meta-value">MYR ${data.week52High.toFixed(4)}</div>
+      <div class="price-meta-value">${CCY} ${data.week52High.toFixed(4)}</div>
     </div>
     <div class="price-meta-item">
       <div class="price-meta-label">52w Low</div>
-      <div class="price-meta-value">MYR ${data.week52Low.toFixed(4)}</div>
+      <div class="price-meta-value">${CCY} ${data.week52Low.toFixed(4)}</div>
     </div>
     <div class="price-meta-item">
       <div class="price-meta-label">Volume</div>
@@ -995,9 +1033,9 @@ function drawSparkline(history) {
 
   // Range labels
   document.getElementById('sparkRange').innerHTML =
-    `<span>Low: MYR ${min.toFixed(4)}</span>
+    `<span>Low: ${CCY} ${min.toFixed(4)}</span>
      <span style="color:var(--text3)">${history[0]?.date || ''} → ${history[history.length-1]?.date || ''}</span>
-     <span>High: MYR ${max.toFixed(4)}</span>`;
+     <span>High: ${CCY} ${max.toFixed(4)}</span>`;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1075,6 +1113,7 @@ function addToWatchlist() {
     ticker:    currentData.ticker,
     name:      currentData.name,
     sector:    currentData.sector,
+    currency:  currentData.currency || 'MYR',
     verdict:   s.verdict,
     vClass:    s.vClass,
     risk:      s.risk,
@@ -1106,6 +1145,7 @@ async function refreshWatchlist() {
       const sc = d.screening;
       watchlist[i].price     = d.price;
       watchlist[i].changePct = d.changePct;
+      watchlist[i].currency  = d.currency || 'MYR';
       watchlist[i].verdict   = sc.verdict;
       watchlist[i].vClass    = sc.vClass;
       watchlist[i].risk      = sc.risk;
@@ -1152,7 +1192,7 @@ function renderWatchlist() {
               <div class="wl-ticker">${e.ticker}</div>
               <div class="wl-name">${(e.name||'').slice(0,32)}</div>
             </td>
-            <td class="wl-price">MYR ${e.price?.toFixed(4)||'—'}</td>
+            <td class="wl-price">${e.currency||''} ${e.price?.toFixed(4)||'—'}</td>
             <td class="${'wl-change '+(up?'up':'down')}">${up?'▲':'▼'} ${Math.abs(e.changePct||0).toFixed(2)}%</td>
             <td><span class="verdict-pill ${e.vClass||''}">${e.verdict||'—'}</span></td>
             <td><span class="badge ${rCls}">${e.risk||'—'}</span></td>
