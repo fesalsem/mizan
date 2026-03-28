@@ -72,16 +72,66 @@ DOUBTFUL_SECTORS = [
 #  DATA FETCHING
 # ══════════════════════════════════════════════════════════
 
+# Known international exchanges and their Yahoo Finance suffixes
+EXCHANGE_SUFFIXES = {
+    ".KL": "Bursa Malaysia",
+    ".L":  "London Stock Exchange",
+    ".PA": "Euronext Paris",
+    ".DE": "Frankfurt / XETRA",
+    ".HK": "Hong Kong",
+    ".T":  "Tokyo",
+    ".AX": "ASX Australia",
+    ".SI": "Singapore",
+    ".SS": "Shanghai",
+    ".SZ": "Shenzhen",
+}
+
+# Well-known US tickers — no suffix needed on Yahoo Finance
+US_KNOWN = {
+    "AAPL","MSFT","GOOGL","GOOG","AMZN","TSLA","NVDA","META","NFLX",
+    "AMD","INTC","QCOM","AVGO","TXN","MU","AMAT","LRCX","KLAC",
+    "JPM","BAC","GS","MS","WFC","C","BRK-B","BRK-A",
+    "JNJ","PFE","MRK","ABBV","LLY","BMY","AMGN","GILD",
+    "XOM","CVX","COP","SLB","EOG",
+    "WMT","COST","TGT","HD","MCD","SBUX","NKE",
+    "DIS","CMCSA","T","VZ","TMUS",
+    "V","MA","PYPL","AXP","SQ","COIN",
+    "BABA","JD","PDD","BIDU","NIO","XPEV","LI",
+}
+
 def normalise_ticker(symbol: str) -> str:
-    """Convert user input to Yahoo Finance Bursa .KL ticker."""
-    s = symbol.upper().strip()
-    if s.endswith(".KL"):
-        return s
-    # Pure digits → pad to 4 chars
+    """
+    Intelligently convert user input to the correct Yahoo Finance ticker.
+
+    Rules (in order):
+    1. Already has a known exchange suffix (.KL, .L, etc.) → use as-is
+    2. Pure digits (4-digit Bursa code) → append .KL
+    3. Known US ticker → use as-is (no suffix)
+    4. Looks like a US ticker (1-5 uppercase letters, no digits) → use as-is
+       and let Yahoo Finance resolve it; fall back to .KL if no data
+    5. Otherwise → try as-is first, then append .KL
+    """
+    s = symbol.upper().strip().replace(" ", "")
+
+    # Already has a recognised suffix
+    for suffix in EXCHANGE_SUFFIXES:
+        if s.endswith(suffix):
+            return s
+
+    # Pure Bursa 4-digit code
     if s.isdigit():
         return s.zfill(4) + ".KL"
-    # Letters → append .KL
-    return s + ".KL"
+
+    # Known US ticker
+    if s in US_KNOWN:
+        return s
+
+    # Looks like a plain US ticker (1–5 letters, no dots or digits)
+    if s.isalpha() and 1 <= len(s) <= 5:
+        return s   # Yahoo Finance will resolve TSLA, NVDA, etc. correctly
+
+    # Alphanumeric with no suffix — return as-is and let Yahoo resolve
+    return s
 
 
 def safe(val, default=None):
@@ -95,7 +145,7 @@ def safe(val, default=None):
 
 def fetch_stock(symbol: str) -> dict:
     """
-    Fetch comprehensive data for a Bursa Malaysia stock.
+    Fetch comprehensive data for any stock (Bursa Malaysia or international).
     Returns a dict ready to JSON-serialise.
     """
     ticker_str = normalise_ticker(symbol)
@@ -108,7 +158,19 @@ def fetch_stock(symbol: str) -> dict:
         info.get("currentPrice") is None and
         info.get("previousClose") is None
     ):
-        raise ValueError(f"No data found for '{ticker_str}'. Check the stock code.")
+        # If it looked like a plain ticker but failed, try .KL as fallback
+        if not any(ticker_str.endswith(s) for s in EXCHANGE_SUFFIXES) and not ticker_str[-1].isdigit():
+            fallback = ticker_str + ".KL"
+            tk2 = yf.Ticker(fallback)
+            info2 = tk2.info or {}
+            if info2.get("regularMarketPrice") or info2.get("currentPrice") or info2.get("previousClose"):
+                ticker_str = fallback
+                tk = tk2
+                info = info2
+            else:
+                raise ValueError(f"No data found for '{ticker_str}'. Check the stock code.")
+        else:
+            raise ValueError(f"No data found for '{ticker_str}'. Check the stock code.")
 
     # ── Price ─────────────────────────────────────────────
     price      = safe(info.get("currentPrice") or info.get("regularMarketPrice") or 0)
