@@ -471,6 +471,85 @@ body::before{
   .price-row{gap:16px}
   .price-meta{margin-left:0;width:100%}
 }
+
+/* ── CACHE BADGE ── */
+.cache-badge{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:0.65rem;font-family:var(--mono);
+  padding:3px 10px;border-radius:10px;
+  background:var(--teal-dim);color:var(--teal);
+  border:1px solid #0d534930;
+}
+
+/* ── SC CHECK BANNER ── */
+.sc-banner{
+  padding:12px 28px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:12px;font-size:0.82rem;
+}
+.sc-banner.compliant  {background:#052e1a80;border-left:3px solid var(--green)}
+.sc-banner.non_compliant{background:var(--red-glow);border-left:3px solid var(--red)}
+.sc-banner.warn       {background:var(--amber-glow);border-left:3px solid var(--amber)}
+.sc-banner-icon{font-size:1.1rem;flex-shrink:0}
+.sc-banner-text{flex:1}
+.sc-banner-title{font-weight:700;margin-bottom:2px}
+.sc-banner.compliant   .sc-banner-title{color:var(--green)}
+.sc-banner.non_compliant .sc-banner-title{color:var(--red)}
+.sc-banner.warn        .sc-banner-title{color:var(--amber)}
+.sc-banner-note{font-size:0.74rem;color:var(--text2)}
+.sc-link{color:var(--teal);text-decoration:none;font-size:0.72rem;white-space:nowrap}
+.sc-link:hover{text-decoration:underline}
+
+/* ── DIVIDEND PURIFICATION CALCULATOR ── */
+.purify-section{
+  padding:20px 28px;border-top:1px solid var(--border);
+}
+.purify-card{
+  background:var(--surface2);border:1px solid var(--border2);
+  border-radius:var(--r);padding:20px 24px;
+}
+.purify-title{
+  font-size:0.95rem;font-weight:700;color:var(--gold);
+  margin-bottom:4px;display:flex;align-items:center;gap:8px;
+}
+.purify-subtitle{font-size:0.78rem;color:var(--text2);margin-bottom:16px;line-height:1.5}
+.purify-inputs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-end}
+.purify-field{display:flex;flex-direction:column;gap:5px;flex:1;min-width:120px}
+.purify-label{font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text3)}
+.purify-input{
+  background:var(--bg);border:1px solid var(--border2);
+  border-radius:var(--r-sm);padding:10px 14px;
+  color:var(--text);font-family:var(--mono);font-size:0.9rem;
+  outline:none;transition:border-color 0.2s;
+}
+.purify-input:focus{border-color:var(--gold-dim)}
+.btn-purify{
+  background:linear-gradient(135deg,var(--gold),#a87c2a);
+  color:#080c10;border:none;border-radius:var(--r-sm);
+  padding:10px 20px;font-family:var(--sans);font-size:0.82rem;
+  font-weight:700;cursor:pointer;letter-spacing:0.04em;
+  text-transform:uppercase;white-space:nowrap;align-self:flex-end;
+}
+.btn-purify:hover{opacity:0.9}
+.purify-result{display:none;margin-top:14px}
+.purify-result.visible{display:block;animation:fadeIn 0.2s ease}
+.purify-row{
+  display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;
+}
+.purify-cell{
+  background:var(--surface3);border-radius:var(--r-sm);
+  padding:12px 14px;text-align:center;
+}
+.purify-cell-label{font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text3);margin-bottom:5px}
+.purify-cell-value{font-size:1rem;font-weight:700;font-family:var(--mono)}
+.purify-cell-value.donate{color:var(--amber)}
+.purify-cell-value.keep  {color:var(--green)}
+.purify-cell-value.total {color:var(--text)}
+.purify-note{
+  font-size:0.8rem;color:var(--text2);line-height:1.6;
+  padding:12px 14px;background:var(--surface3);
+  border-radius:var(--r-sm);border-left:3px solid var(--gold-dim);
+}
+
 </style>
 </head>
 <body>
@@ -608,6 +687,9 @@ body::before{
             <div id="checksList"></div>
           </div>
 
+          <!-- SC Banner (rendered by JS) -->
+          <div id="scBanner"></div>
+
           <!-- Invest -->
           <div class="invest-section">
             <div class="invest-title">Ready to invest? Choose a Bursa Malaysia broker:</div>
@@ -618,6 +700,45 @@ body::before{
             </div>
           </div>
 
+        </div>
+
+        <!-- Dividend Purification Calculator -->
+        <div class="result-card purify-section" id="purifySection" style="display:none">
+          <div class="purify-card">
+            <div class="purify-title">🌙 Dividend Purification Calculator</div>
+            <div class="purify-subtitle">
+              If a stock has non-permissible income (e.g. 2% interest), Islamic scholars recommend
+              donating that percentage of any dividend received to charity. Enter your dividend amount below.
+            </div>
+            <div class="purify-inputs">
+              <div class="purify-field">
+                <label class="purify-label">Dividend Received</label>
+                <input class="purify-input" id="purifyAmt" type="number" min="0" step="0.01" placeholder="e.g. 100.00"/>
+              </div>
+              <div class="purify-field" style="max-width:140px">
+                <label class="purify-label">Currency</label>
+                <input class="purify-input" id="purifyCcy" type="text" value="MYR" maxlength="3" style="text-transform:uppercase"/>
+              </div>
+              <button class="btn-purify" onclick="runPurify()">Calculate →</button>
+            </div>
+            <div class="purify-result" id="purifyResult">
+              <div class="purify-row">
+                <div class="purify-cell">
+                  <div class="purify-cell-label">Total Dividend</div>
+                  <div class="purify-cell-value total" id="purifyTotal">—</div>
+                </div>
+                <div class="purify-cell">
+                  <div class="purify-cell-label">Donate to Charity</div>
+                  <div class="purify-cell-value donate" id="purifyDonate">—</div>
+                </div>
+                <div class="purify-cell">
+                  <div class="purify-cell-label">You Keep</div>
+                  <div class="purify-cell-value keep" id="purifyKeep">—</div>
+                </div>
+              </div>
+              <div class="purify-note" id="purifyNote"></div>
+            </div>
+          </div>
         </div>
 
         <!-- Watchlist button -->
@@ -975,6 +1096,12 @@ function renderResult(data, screening) {
        </div>
      </div>`).join('');
 
+  // SC Malaysia check banner
+  renderSCBanner(data.scCheck);
+
+  // Purification calculator (show when relevant)
+  showPurifySection(data);
+
   document.getElementById('resultSection').classList.add('visible');
   document.getElementById('resultSection').scrollIntoView({behavior:'smooth',block:'start'});
 }
@@ -1056,6 +1183,8 @@ async function runScreen() {
     document.getElementById('loader').classList.remove('visible');
     document.getElementById('screenBtn').disabled = false;
     renderResult(currentData, currentScreening);
+    // Show cache badge if served from cache
+    if (currentData._cached) renderCacheIndicator(true);
   } catch(err) {
     document.getElementById('loader').classList.remove('visible');
     document.getElementById('screenBtn').disabled = false;
@@ -1244,6 +1373,100 @@ function renderSteps() {
         ${s.link ? `<a class="step-link" href="${s.link}" target="_blank" rel="noopener">${s.linkLabel}</a>` : ''}
       </div>
     </div>`).join('');
+}
+
+/* ══════════════════════════════════════════════════════════
+   SC MALAYSIA CHECK DISPLAY
+══════════════════════════════════════════════════════════ */
+function renderSCBanner(scCheck) {
+  const el = document.getElementById('scBanner');
+  if (!scCheck || scCheck.status === 'not_applicable') {
+    el.innerHTML = ''; return;
+  }
+  const cfg = {
+    compliant:     { cls:'compliant',     icon:'🟢', title:'SC Malaysia: Shariah-Compliant' },
+    non_compliant: { cls:'non_compliant', icon:'🔴', title:'SC Malaysia: Not Shariah-Compliant' },
+    not_found:     { cls:'warn',          icon:'🟡', title:'SC Malaysia: Not in Built-in List' },
+  };
+  const c = cfg[scCheck.status] || cfg.not_found;
+  el.innerHTML = `
+    <div class="sc-banner ${c.cls}">
+      <div class="sc-banner-icon">${c.icon}</div>
+      <div class="sc-banner-text">
+        <div class="sc-banner-title">${c.title}</div>
+        <div class="sc-banner-note">${scCheck.note || ''}</div>
+      </div>
+      <a class="sc-link" href="https://www.sc.com.my/development/islamic-capital-market/shariah-compliant-securities"
+         target="_blank" rel="noopener">Official SC List →</a>
+    </div>`;
+}
+
+/* ══════════════════════════════════════════════════════════
+   CACHE INDICATOR
+══════════════════════════════════════════════════════════ */
+function renderCacheIndicator(cached) {
+  const el = document.getElementById('cTime');
+  if (!el) return;
+  const cacheTag = cached
+    ? ' <span class="cache-badge">⚡ Cached</span>'
+    : '';
+  // cTime is already set by renderResult — append tag
+  el.innerHTML = el.textContent + cacheTag;
+}
+
+/* ══════════════════════════════════════════════════════════
+   DIVIDEND PURIFICATION CALCULATOR
+══════════════════════════════════════════════════════════ */
+async function runPurify() {
+  const amt = parseFloat(document.getElementById('purifyAmt').value);
+  const ccy = (document.getElementById('purifyCcy').value || 'MYR').toUpperCase().slice(0,3);
+
+  if (!currentData) { showToast('Screen a stock first', 'error'); return; }
+  if (!amt || amt <= 0) { showToast('Enter a valid dividend amount', 'error'); return; }
+
+  const ir = currentData.interestRatio;
+  if (ir == null || ir === 0) {
+    document.getElementById('purifyResult').classList.add('visible');
+    document.getElementById('purifyTotal').textContent  = `${ccy} ${amt.toFixed(2)}`;
+    document.getElementById('purifyDonate').textContent = `${ccy} 0.00`;
+    document.getElementById('purifyKeep').textContent   = `${ccy} ${amt.toFixed(2)}`;
+    document.getElementById('purifyNote').textContent   =
+      'No purification needed for this stock — interest income is zero or not available.';
+    return;
+  }
+
+  try {
+    const resp = await fetch(
+      `${API}/purify?dividend=${amt}&interest_ratio=${ir}&currency=${ccy}`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    const json = await resp.json();
+    if (!json.ok) throw new Error(json.error);
+    const d = json.data;
+
+    document.getElementById('purifyTotal').textContent  = `${d.currency} ${d.dividend.toFixed(2)}`;
+    document.getElementById('purifyDonate').textContent = `${d.currency} ${d.purifyAmount.toFixed(2)}`;
+    document.getElementById('purifyKeep').textContent   = `${d.currency} ${d.keepAmount.toFixed(2)}`;
+    document.getElementById('purifyNote').textContent   = d.note;
+    document.getElementById('purifyResult').classList.add('visible');
+  } catch(e) {
+    showToast('Purification calc error: ' + e.message, 'error');
+  }
+}
+
+function showPurifySection(data) {
+  const sec = document.getElementById('purifySection');
+  // Show calculator only when there's actual dividend yield or interest data
+  if (data.dividendYield || data.interestRatio != null) {
+    sec.style.display = 'block';
+    // Pre-fill currency
+    document.getElementById('purifyCcy').value = data.currency || 'MYR';
+    // Reset previous result
+    document.getElementById('purifyResult').classList.remove('visible');
+    document.getElementById('purifyAmt').value = '';
+  } else {
+    sec.style.display = 'none';
+  }
 }
 
 /* ══════════════════════════════════════════════════════════
