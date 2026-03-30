@@ -1,212 +1,211 @@
 """
-╔══════════════════════════════════════════════════════════╗
-║   MIZAN — Backend Server                                 ║
-║   Serves real financial data to the frontend             ║
-║   Run: python server.py                                  ║
-╚══════════════════════════════════════════════════════════╝
-
-Fetches data from Yahoo Finance using yfinance (no CORS issues),
-applies Shariah screening logic, and serves it to the HTML frontend
-via a local API on http://localhost:5000
+Mizan Backend Server v2
+Run: python server.py
 """
-
-import json
-import math
+import json, math, time, threading, re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from pathlib import Path
 import sys
-import os
 
-# ── Dependency check ──────────────────────────────────────
 def check_deps():
-    missing = []
-    for pkg in ["yfinance", "pandas"]:
-        try:
-            __import__(pkg)
-        except ImportError:
-            missing.append(pkg)
+    missing = [p for p in ["yfinance","pandas"] if not __import__("importlib").util.find_spec(p)]
     if missing:
-        print(f"\n[ERROR] Missing packages: {', '.join(missing)}")
-        print("\nRun this first:\n")
-        print(f"  pip install {' '.join(missing)}\n")
+        print(f"\n[ERROR] Missing: {', '.join(missing)}\nRun: pip install {' '.join(missing)}\n")
         sys.exit(1)
-
 check_deps()
-
 import yfinance as yf
 
-# ══════════════════════════════════════════════════════════
-#  SHARIAH SCREENING CONSTANTS
-# ══════════════════════════════════════════════════════════
+# ── Cache ─────────────────────────────────────────────────
+CACHE: dict = {}
+CACHE_TTL   = 900   # 15 minutes
+_cache_lock = threading.Lock()
 
-DEBT_THRESHOLD   = 0.33  # AAOIFI SS-21: interest-bearing debt < 33% of total assets
-INCOME_THRESHOLD = 0.05  # DJIM: non-permissible income < 5% of total revenue
-LIQUID_THRESHOLD = 0.33  # Cash + receivables < 33% of market cap (for trading)
+def cache_get(key):
+    with _cache_lock:
+        e = CACHE.get(key)
+        return e["data"] if e and time.time() < e["expires_at"] else None
+
+def cache_set(key, data):
+    with _cache_lock:
+        CACHE[key] = {"data": data, "expires_at": time.time() + CACHE_TTL}
+
+def cache_clear(key=None):
+    with _cache_lock:
+        if key: CACHE.pop(key, None)
+        else:   CACHE.clear()
+
+def cache_stats():
+    with _cache_lock:
+        now  = time.time()
+        live = sum(1 for e in CACHE.values() if now < e["expires_at"])
+        return {"cached": live, "total": len(CACHE), "ttl_seconds": CACHE_TTL}
+
+# ── SC Malaysia Shariah List ──────────────────────────────
+SC_LIST_FILE = Path(__file__).parent / "sc_shariah_list.json"
+_sc_list: dict = {}
+_sc_lock = threading.Lock()
+
+# Built-in subset of known SC Malaysia compliant/non-compliant stocks
+# Always verify against the official list at sc.com.my
+SC_COMPLIANT = {
+    "1295","1155","4197","5347","5183","6012","6888","7277","5168",
+    "3816","4588","5014","5020","5085","0072","0082","7084","7160",
+    "5216","5228","3026","3301","5090","7052","1562","2445","5101",
+    "8664","2291","5138","0055","0078","6033","5285","0148","5878",
+    "1015","1023","1066","1082","1171","1198",
+}
+SC_NON_COMPLIANT = {
+    "3255",  # Carlsberg
+    "3293",  # Heineken Malaysia
+    "4162",  # BAT Malaysia
+    "1961",  # Genting Berhad
+    "3182",  # Genting Malaysia
+}
+
+def load_sc_list():
+    global _sc_list
+    with _sc_lock:
+        if _sc_list:
+            return _sc_list
+        if SC_LIST_FILE.exists():
+            try:
+                raw = json.loads(SC_LIST_FILE.read_text())
+                if time.time() - raw.get("fetched_at", 0) < 86400:
+                    _sc_list = raw.get("stocks", {})
+                    print(f"  ✓  SC list loaded from cache ({len(_sc_list)} stocks)")
+                    return _sc_list
+            except Exception:
+                pass
+        stocks = {}
+        for c in SC_COMPLIANT:
+            stocks[c.zfill(4)] = {"status": "compliant",     "source": "builtin"}
+        for c in SC_NON_COMPLIANT:
+            stocks[c.zfill(4)] = {"status": "non_compliant", "source": "builtin"}
+        _sc_list = stocks
+        try:
+            SC_LIST_FILE.write_text(json.dumps({
+                "fetched_at": time.time(), "stocks": stocks,
+                "note": "Built-in list. Verify at sc.com.my for full accuracy."
+            }, indent=2))
+        except Exception:
+            pass
+        print(f"  ✓  SC list initialised ({len(stocks)} stocks)")
+        return _sc_list
+
+def check_sc_list(ticker):
+    if not ticker.endswith(".KL"):
+        return {"found": False, "status": "not_applicable",
+                "note": "SC Malaysia list covers Bursa Malaysia stocks only."}
+    code = ticker.replace(".KL", "").zfill(4)
+    sc   = load_sc_list()
+    entry = sc.get(code)
+    if not entry:
+        return {"found": False, "status": "not_found",
+                "note": "Not in built-in SC list. Verify manually at sc.com.my"}
+    s = entry["status"]
+    return {
+        "found":  True,
+        "status": s,
+        "source": entry.get("source","builtin"),
+        "note": (
+            f"Listed as Shariah-{'compliant' if s=='compliant' else 'non-compliant'} "
+            f"by SC Malaysia (built-in data). Always verify the latest list at sc.com.my"
+        )
+    }
+
+# ── Constants ─────────────────────────────────────────────
+DEBT_THRESHOLD   = 0.33
+INCOME_THRESHOLD = 0.05
 
 HARAM_KEYWORDS = [
-    "alcohol", "beer", "wine", "spirit", "spirits", "brew", "brewery",
-    "distill", "distillery", "liquor", "whisky", "whiskey", "vodka",
-    "tobacco", "cigarette", "cigarettes", "cigar", "cigars",
-    "casino", "gambling", "lottery", "betting", "gaming resort",
-    "pork", "swine", "pig farming",
-    "adult entertainment", "pornograph",
-    "arms manufacture", "ammunition", "weapon manufacturer",
-    "conventional bank", "money lending", "pawnbroker",
-    "insurance underwriting",
+    "alcohol","beer","wine","spirit","spirits","brew","brewery","distill",
+    "distillery","liquor","whisky","whiskey","vodka","tobacco","cigarette",
+    "cigarettes","cigar","cigars","casino","gambling","lottery","betting",
+    "gaming resort","pork","swine","pig farming","adult entertainment",
+    "pornograph","arms manufacture","ammunition","weapon manufacturer",
+    "conventional bank","money lending","pawnbroker","insurance underwriting",
 ]
-
-HARAM_SECTORS = [
-    "alcohol", "tobacco", "gambling", "adult entertainment",
-    "conventional banking",
-]
-
 DOUBTFUL_SECTORS = [
-    "financial services", "diversified financial",
-    "media", "entertainment",
-    "food & beverage", "beverages",
-    "hospitality", "hotel", "hotels",
-    "restaurants",
+    "financial services","diversified financial","media","entertainment",
+    "food & beverage","beverages","hospitality","hotel","hotels","restaurants",
 ]
-
-# ══════════════════════════════════════════════════════════
-#  DATA FETCHING
-# ══════════════════════════════════════════════════════════
-
-# Known international exchanges and their Yahoo Finance suffixes
 EXCHANGE_SUFFIXES = {
-    ".KL": "Bursa Malaysia",
-    ".L":  "London Stock Exchange",
-    ".PA": "Euronext Paris",
-    ".DE": "Frankfurt / XETRA",
-    ".HK": "Hong Kong",
-    ".T":  "Tokyo",
-    ".AX": "ASX Australia",
-    ".SI": "Singapore",
-    ".SS": "Shanghai",
-    ".SZ": "Shenzhen",
+    ".KL":"Bursa Malaysia",".L":"LSE",".PA":"Euronext",".DE":"Frankfurt",
+    ".HK":"Hong Kong",".T":"Tokyo",".AX":"ASX",".SI":"Singapore",
+    ".SS":"Shanghai",".SZ":"Shenzhen",
 }
-
-# Well-known US tickers — no suffix needed on Yahoo Finance
 US_KNOWN = {
-    "AAPL","MSFT","GOOGL","GOOG","AMZN","TSLA","NVDA","META","NFLX",
-    "AMD","INTC","QCOM","AVGO","TXN","MU","AMAT","LRCX","KLAC",
-    "JPM","BAC","GS","MS","WFC","C","BRK-B","BRK-A",
-    "JNJ","PFE","MRK","ABBV","LLY","BMY","AMGN","GILD",
-    "XOM","CVX","COP","SLB","EOG",
-    "WMT","COST","TGT","HD","MCD","SBUX","NKE",
-    "DIS","CMCSA","T","VZ","TMUS",
-    "V","MA","PYPL","AXP","SQ","COIN",
-    "BABA","JD","PDD","BIDU","NIO","XPEV","LI",
+    "AAPL","MSFT","GOOGL","GOOG","AMZN","TSLA","NVDA","META","NFLX","AMD",
+    "INTC","QCOM","AVGO","TXN","MU","AMAT","LRCX","KLAC","JPM","BAC","GS",
+    "MS","WFC","C","BRK-B","BRK-A","JNJ","PFE","MRK","ABBV","LLY","BMY",
+    "AMGN","GILD","XOM","CVX","COP","SLB","EOG","WMT","COST","TGT","HD",
+    "MCD","SBUX","NKE","DIS","CMCSA","T","VZ","TMUS","V","MA","PYPL","AXP",
+    "SQ","COIN","BABA","JD","PDD","BIDU","NIO","XPEV","LI",
 }
 
-def normalise_ticker(symbol: str) -> str:
-    """
-    Intelligently convert user input to the correct Yahoo Finance ticker.
-
-    Rules (in order):
-    1. Already has a known exchange suffix (.KL, .L, etc.) → use as-is
-    2. Pure digits (4-digit Bursa code) → append .KL
-    3. Known US ticker → use as-is (no suffix)
-    4. Looks like a US ticker (1-5 uppercase letters, no digits) → use as-is
-       and let Yahoo Finance resolve it; fall back to .KL if no data
-    5. Otherwise → try as-is first, then append .KL
-    """
-    s = symbol.upper().strip().replace(" ", "")
-
-    # Already has a recognised suffix
-    for suffix in EXCHANGE_SUFFIXES:
-        if s.endswith(suffix):
-            return s
-
-    # Pure Bursa 4-digit code
-    if s.isdigit():
-        return s.zfill(4) + ".KL"
-
-    # Known US ticker
-    if s in US_KNOWN:
-        return s
-
-    # Looks like a plain US ticker (1–5 letters, no dots or digits)
-    if s.isalpha() and 1 <= len(s) <= 5:
-        return s   # Yahoo Finance will resolve TSLA, NVDA, etc. correctly
-
-    # Alphanumeric with no suffix — return as-is and let Yahoo resolve
+def normalise_ticker(symbol):
+    s = symbol.upper().strip().replace(" ","")
+    for sfx in EXCHANGE_SUFFIXES:
+        if s.endswith(sfx): return s
+    if s.isdigit():           return s.zfill(4) + ".KL"
+    if s in US_KNOWN:         return s
+    if s.isalpha() and len(s) <= 5: return s
     return s
 
+def safe(v, d=None):
+    if v is None: return d
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)): return d
+    return v
 
-def safe(val, default=None):
-    """Return None for NaN/Inf floats so JSON serialises cleanly."""
-    if val is None:
-        return default
-    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
-        return default
-    return val
-
-
-def fetch_stock(symbol: str) -> dict:
-    """
-    Fetch comprehensive data for any stock (Bursa Malaysia or international).
-    Returns a dict ready to JSON-serialise.
-    """
+# ── Data Fetching ─────────────────────────────────────────
+def fetch_stock(symbol):
     ticker_str = normalise_ticker(symbol)
-    tk = yf.Ticker(ticker_str)
+    cached = cache_get(ticker_str)
+    if cached:
+        r = dict(cached); r["_cached"] = True
+        return r
 
-    # ── Basic info ────────────────────────────────────────
+    tk   = yf.Ticker(ticker_str)
     info = tk.info or {}
-    if not info or (
-        info.get("regularMarketPrice") is None and
-        info.get("currentPrice") is None and
-        info.get("previousClose") is None
-    ):
-        # If it looked like a plain ticker but failed, try .KL as fallback
+
+    if not info or (info.get("regularMarketPrice") is None and
+                    info.get("currentPrice")       is None and
+                    info.get("previousClose")      is None):
         if not any(ticker_str.endswith(s) for s in EXCHANGE_SUFFIXES) and not ticker_str[-1].isdigit():
-            fallback = ticker_str + ".KL"
-            tk2 = yf.Ticker(fallback)
+            fb    = ticker_str + ".KL"
+            tk2   = yf.Ticker(fb)
             info2 = tk2.info or {}
             if info2.get("regularMarketPrice") or info2.get("currentPrice") or info2.get("previousClose"):
-                ticker_str = fallback
-                tk = tk2
-                info = info2
+                ticker_str = fb; tk = tk2; info = info2
             else:
                 raise ValueError(f"No data found for '{ticker_str}'. Check the stock code.")
         else:
             raise ValueError(f"No data found for '{ticker_str}'. Check the stock code.")
 
-    # ── Price ─────────────────────────────────────────────
     price      = safe(info.get("currentPrice") or info.get("regularMarketPrice") or 0)
     prev_close = safe(info.get("previousClose") or price)
     change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0.0
 
-    # ── Balance sheet (most important for halal screening) ─
-    # Strategy: try fast_info first, then full balance sheet download
     total_assets = safe(info.get("totalAssets"))
     total_debt   = safe(info.get("totalDebt"))
 
-    # Fallback: download actual balance sheet
     if total_assets is None or total_debt is None:
         try:
             bs = tk.balance_sheet
             if bs is not None and not bs.empty:
-                def get_bs(row_names):
-                    for name in row_names:
-                        matches = [c for c in bs.index if name.lower() in c.lower()]
-                        if matches:
-                            val = bs.loc[matches[0]].iloc[0]
-                            if val is not None and not (isinstance(val, float) and math.isnan(val)):
-                                return float(val)
+                def get_bs(ns):
+                    for n in ns:
+                        m = [c for c in bs.index if n.lower() in c.lower()]
+                        if m:
+                            v = bs.loc[m[0]].iloc[0]
+                            if v is not None and not (isinstance(v,float) and math.isnan(v)):
+                                return float(v)
                     return None
+                if total_assets is None: total_assets = get_bs(["Total Assets","TotalAssets"])
+                if total_debt   is None: total_debt   = get_bs(["Total Debt","Long Term Debt","LongTermDebt","Total Long Term Debt","Short Long Term Debt"])
+        except Exception: pass
 
-                if total_assets is None:
-                    total_assets = get_bs(["Total Assets", "TotalAssets"])
-                if total_debt is None:
-                    total_debt = get_bs([
-                        "Total Debt", "Long Term Debt", "LongTermDebt",
-                        "Total Long Term Debt", "Short Long Term Debt"
-                    ])
-        except Exception:
-            pass
-
-    # ── Income statement ──────────────────────────────────
     total_revenue    = safe(info.get("totalRevenue"))
     interest_expense = safe(info.get("interestExpense"))
     gross_profit     = safe(info.get("grossProfits"))
@@ -215,414 +214,306 @@ def fetch_stock(symbol: str) -> dict:
         try:
             inc = tk.income_stmt
             if inc is not None and not inc.empty:
-                def get_inc(row_names):
-                    for name in row_names:
-                        matches = [c for c in inc.index if name.lower() in c.lower()]
-                        if matches:
-                            val = inc.loc[matches[0]].iloc[0]
-                            if val is not None and not (isinstance(val, float) and math.isnan(val)):
-                                return float(val)
+                def get_inc(ns):
+                    for n in ns:
+                        m = [c for c in inc.index if n.lower() in c.lower()]
+                        if m:
+                            v = inc.loc[m[0]].iloc[0]
+                            if v is not None and not (isinstance(v,float) and math.isnan(v)):
+                                return float(v)
                     return None
-
-                if total_revenue is None:
-                    total_revenue = get_inc(["Total Revenue", "TotalRevenue", "Revenue"])
+                if total_revenue    is None: total_revenue    = get_inc(["Total Revenue","TotalRevenue","Revenue"])
                 if interest_expense is None:
-                    ie = get_inc(["Interest Expense", "InterestExpense"])
+                    ie = get_inc(["Interest Expense","InterestExpense"])
                     interest_expense = abs(ie) if ie is not None else None
-        except Exception:
-            pass
+        except Exception: pass
 
-    # ── Compute screening ratios ──────────────────────────
-    debt_ratio     = (total_debt / total_assets) if (total_assets and total_debt is not None and total_assets > 0) else None
-    interest_ratio = (abs(interest_expense) / total_revenue) if (total_revenue and interest_expense is not None and total_revenue > 0) else None
+    debt_ratio     = (total_debt / total_assets)       if (total_assets and total_debt   is not None and total_assets > 0)  else None
+    interest_ratio = (abs(interest_expense)/total_revenue) if (total_revenue and interest_expense is not None and total_revenue > 0) else None
 
-    # ── Valuation & profitability ─────────────────────────
-    pe_ratio         = safe(info.get("trailingPE") or info.get("forwardPE"))
-    pb_ratio         = safe(info.get("priceToBook"))
-    profit_margin    = safe(info.get("profitMargins"))
-    return_on_equity = safe(info.get("returnOnEquity"))
-    return_on_assets = safe(info.get("returnOnAssets"))
-    dividend_yield   = safe(info.get("dividendYield") or info.get("trailingAnnualDividendYield"))
-    earnings_growth  = safe(info.get("earningsGrowth") or info.get("earningsQuarterlyGrowth"))
-    revenue_growth   = safe(info.get("revenueGrowth"))
-    current_ratio    = safe(info.get("currentRatio"))
-    quick_ratio      = safe(info.get("quickRatio"))
-
-    # ── Market data ───────────────────────────────────────
-    market_cap    = safe(info.get("marketCap"))
-    week52_high   = safe(info.get("fiftyTwoWeekHigh"))
-    week52_low    = safe(info.get("fiftyTwoWeekLow"))
-    volume        = safe(info.get("volume") or info.get("regularMarketVolume"))
-    avg_volume    = safe(info.get("averageVolume"))
-    beta          = safe(info.get("beta"))
-
-    # ── 6-month price history ─────────────────────────────
     history = []
     try:
         hist = tk.history(period="6mo", interval="1mo")
         if not hist.empty:
             for ts, row in hist.iterrows():
                 cl = row.get("Close")
-                if cl is not None and not (isinstance(cl, float) and math.isnan(cl)):
+                if cl is not None and not (isinstance(cl,float) and math.isnan(cl)):
                     history.append({
-                        "date":  ts.strftime("%b %y"),
-                        "close": round(float(cl), 4),
-                        "open":  round(float(row.get("Open", cl)), 4),
-                        "high":  round(float(row.get("High", cl)), 4),
-                        "low":   round(float(row.get("Low",  cl)), 4),
-                        "volume": int(row.get("Volume", 0) or 0),
+                        "date":   ts.strftime("%b %y"),
+                        "close":  round(float(cl),4),
+                        "open":   round(float(row.get("Open",cl)),4),
+                        "high":   round(float(row.get("High",cl)),4),
+                        "low":    round(float(row.get("Low", cl)),4),
+                        "volume": int(row.get("Volume",0) or 0),
                     })
-    except Exception:
-        pass
+    except Exception: pass
 
-    # ── Shariah screening ─────────────────────────────────
+    sc_check  = check_sc_list(ticker_str)
     screening = screen_halal(
-        name        = info.get("longName") or info.get("shortName") or ticker_str,
-        sector      = info.get("sector") or "",
-        industry    = info.get("industry") or "",
-        description = (info.get("longBusinessSummary") or "")[:500],
-        debt_ratio  = debt_ratio,
-        interest_ratio = interest_ratio,
-        pe_ratio    = pe_ratio,
-        profit_margin  = profit_margin,
+        name=info.get("longName") or info.get("shortName") or ticker_str,
+        sector=info.get("sector") or "",
+        industry=info.get("industry") or "",
+        description=(info.get("longBusinessSummary") or "")[:500],
+        debt_ratio=debt_ratio, interest_ratio=interest_ratio,
+        pe_ratio=safe(info.get("trailingPE") or info.get("forwardPE")),
+        profit_margin=safe(info.get("profitMargins")),
+        sc_check=sc_check,
     )
 
-    return {
-        # Identity
-        "ticker":       ticker_str,
-        "name":         info.get("longName") or info.get("shortName") or ticker_str,
-        "sector":       info.get("sector") or "N/A",
-        "industry":     info.get("industry") or "N/A",
-        "description":  (info.get("longBusinessSummary") or "")[:400],
-        "exchange":     info.get("exchange") or "KLSE",
-        "currency":     info.get("currency") or "MYR",
-
-        # Price
-        "price":        round(price, 4),
-        "prevClose":    round(prev_close, 4),
-        "changePct":    round(change_pct, 3),
-        "week52High":   round(week52_high, 4) if week52_high else None,
-        "week52Low":    round(week52_low, 4)  if week52_low  else None,
-        "volume":       int(volume) if volume else None,
-        "avgVolume":    int(avg_volume) if avg_volume else None,
-        "marketCap":    int(market_cap) if market_cap else None,
-        "beta":         round(beta, 3) if beta else None,
-
-        # Financial ratios (raw values for display)
-        "totalAssets":     int(total_assets)  if total_assets  else None,
-        "totalDebt":       int(total_debt)    if total_debt    else None,
-        "totalRevenue":    int(total_revenue) if total_revenue else None,
+    result = {
+        "ticker":        ticker_str,
+        "name":          info.get("longName") or info.get("shortName") or ticker_str,
+        "sector":        info.get("sector") or "N/A",
+        "industry":      info.get("industry") or "N/A",
+        "description":   (info.get("longBusinessSummary") or "")[:400],
+        "exchange":      info.get("exchange") or "N/A",
+        "currency":      info.get("currency") or "MYR",
+        "price":         round(price,4),
+        "prevClose":     round(prev_close,4),
+        "changePct":     round(change_pct,3),
+        "week52High":    round(safe(info.get("fiftyTwoWeekHigh"),0),4),
+        "week52Low":     round(safe(info.get("fiftyTwoWeekLow"),0),4),
+        "volume":        int(safe(info.get("volume") or info.get("regularMarketVolume"),0)),
+        "avgVolume":     int(v) if (v:=safe(info.get("averageVolume"))) else None,
+        "marketCap":     int(v) if (v:=safe(info.get("marketCap")))    else None,
+        "beta":          round(v,3) if (v:=safe(info.get("beta")))     else None,
+        "totalAssets":   int(total_assets)   if total_assets   else None,
+        "totalDebt":     int(total_debt)     if total_debt     else None,
+        "totalRevenue":  int(total_revenue)  if total_revenue  else None,
         "interestExpense": int(abs(interest_expense)) if interest_expense else None,
-        "grossProfit":     int(gross_profit)  if gross_profit  else None,
-
-        # Computed ratios
-        "debtRatio":     round(debt_ratio, 4)     if debt_ratio     is not None else None,
-        "interestRatio": round(interest_ratio, 4) if interest_ratio is not None else None,
-
-        # Valuation
-        "peRatio":        round(pe_ratio, 2)         if pe_ratio         else None,
-        "pbRatio":        round(pb_ratio, 3)          if pb_ratio         else None,
-        "profitMargin":   round(profit_margin, 4)     if profit_margin    is not None else None,
-        "returnOnEquity": round(return_on_equity, 4)  if return_on_equity is not None else None,
-        "returnOnAssets": round(return_on_assets, 4)  if return_on_assets is not None else None,
-        "dividendYield":  round(dividend_yield, 4)    if dividend_yield   is not None else None,
-        "earningsGrowth": round(earnings_growth, 4)   if earnings_growth  is not None else None,
-        "revenueGrowth":  round(revenue_growth, 4)    if revenue_growth   is not None else None,
-        "currentRatio":   round(current_ratio, 3)     if current_ratio    is not None else None,
-        "quickRatio":     round(quick_ratio, 3)        if quick_ratio      is not None else None,
-
-        # History
-        "history": history,
-
-        # Shariah screening result
-        "screening": screening,
+        "grossProfit":   int(gross_profit)   if gross_profit   else None,
+        "debtRatio":     round(debt_ratio,4)     if debt_ratio     is not None else None,
+        "interestRatio": round(interest_ratio,4) if interest_ratio is not None else None,
+        "peRatio":        round(v,2)  if (v:=safe(info.get("trailingPE") or info.get("forwardPE"))) else None,
+        "pbRatio":        round(v,3)  if (v:=safe(info.get("priceToBook")))                         else None,
+        "profitMargin":   round(v,4)  if (v:=safe(info.get("profitMargins")))    is not None else None,
+        "returnOnEquity": round(v,4)  if (v:=safe(info.get("returnOnEquity")))   is not None else None,
+        "returnOnAssets": round(v,4)  if (v:=safe(info.get("returnOnAssets")))   is not None else None,
+        "dividendYield":  round(v,4)  if (v:=safe(info.get("dividendYield") or info.get("trailingAnnualDividendYield"))) else None,
+        "earningsGrowth": round(v,4)  if (v:=safe(info.get("earningsGrowth") or info.get("earningsQuarterlyGrowth")))   is not None else None,
+        "revenueGrowth":  round(v,4)  if (v:=safe(info.get("revenueGrowth")))    is not None else None,
+        "currentRatio":   round(v,3)  if (v:=safe(info.get("currentRatio")))     is not None else None,
+        "quickRatio":     round(v,3)  if (v:=safe(info.get("quickRatio")))       is not None else None,
+        "history":       history,
+        "scCheck":       sc_check,
+        "screening":     screening,
+        "fetchedAt":     time.strftime("%H:%M:%S"),
+        "_cached":       False,
     }
+    cache_set(ticker_str, result)
+    return result
 
-
-# ══════════════════════════════════════════════════════════
-#  SHARIAH SCREENING ENGINE
-# ══════════════════════════════════════════════════════════
-
+# ── Screening Engine ──────────────────────────────────────
 def screen_halal(name, sector, industry, description,
-                 debt_ratio, interest_ratio, pe_ratio, profit_margin) -> dict:
-
-    checks   = []
-    issues   = []
-    warnings = []
-
+                 debt_ratio, interest_ratio, pe_ratio,
+                 profit_margin, sc_check=None):
+    checks=[]; issues=[]; warnings=[]
     combined = f"{sector} {industry} {name} {description}".lower()
 
-    # ── Check 1: Business activity ────────────────────────
-    haram_kw = next((kw for kw in HARAM_KEYWORDS if kw in combined), None)
+    # Check 0: SC Malaysia official list
+    if sc_check and sc_check.get("found"):
+        s = sc_check["status"]
+        if s == "compliant":
+            checks.append({"status":"pass","name":"SC Malaysia Official Shariah List",
+                "detail":f"✓ Listed as Shariah-compliant by SC Malaysia. {sc_check.get('note','')}"})
+        elif s == "non_compliant":
+            checks.append({"status":"fail","name":"SC Malaysia Official Shariah List",
+                "detail":f"✗ Listed as non-Shariah-compliant by SC Malaysia. {sc_check.get('note','')}"})
+            issues.append("sc_non_compliant")
+    elif sc_check and sc_check.get("status") == "not_applicable":
+        pass  # international stock — skip
+    else:
+        checks.append({"status":"warn","name":"SC Malaysia Official Shariah List",
+            "detail":"Not found in built-in SC list. Verify manually at sc.com.my"})
+        warnings.append("sc_not_found")
 
-    if haram_kw:
-        checks.append({
-            "status": "fail",
-            "name": "Business Activity / Industry",
-            "detail": (
-                f'Keyword "{haram_kw}" found in sector/industry/description. '
-                f'The primary business involves a categorically prohibited (haram) activity.'
-            )
-        })
+    # Check 1: Haram industry
+    hkw = next((kw for kw in HARAM_KEYWORDS if kw in combined), None)
+    if hkw:
+        checks.append({"status":"fail","name":"Business Activity / Industry",
+            "detail":f'Keyword "{hkw}" detected. Core business involves a prohibited activity.'})
         issues.append("haram_industry")
     else:
-        doubtful = next((ds for ds in DOUBTFUL_SECTORS if ds in combined), None)
-        if doubtful:
-            checks.append({
-                "status": "warn",
-                "name": "Business Activity / Industry",
-                "detail": (
-                    f'Sector "{sector or "N/A"}" may involve mixed income sources. '
-                    f'Not categorically haram, but requires additional verification. '
-                    f'Cross-check against the SC Malaysia Shariah-compliant securities list.'
-                )
-            })
+        ds = next((d for d in DOUBTFUL_SECTORS if d in combined), None)
+        if ds:
+            checks.append({"status":"warn","name":"Business Activity / Industry",
+                "detail":f'Sector "{sector or "N/A"}" may have mixed income sources. Requires verification.'})
             warnings.append("doubtful_sector")
         else:
-            checks.append({
-                "status": "pass",
-                "name": "Business Activity / Industry",
-                "detail": (
-                    f'Sector ({sector or "N/A"}) and industry ({industry or "N/A"}) '
-                    f'do not match any categorically prohibited activity.'
-                )
-            })
+            checks.append({"status":"pass","name":"Business Activity / Industry",
+                "detail":f'Sector ({sector or "N/A"}) / Industry ({industry or "N/A"}) — no prohibited activity detected.'})
 
-    # ── Check 2: Debt-to-Assets ratio (AAOIFI ≤ 33%) ─────
+    # Check 2: Debt ratio
     if debt_ratio is None:
-        checks.append({
-            "status": "warn",
-            "name": "Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
-            "detail": (
-                "Balance sheet data unavailable from Yahoo Finance for this stock. "
-                "Verify manually via Bursa Malaysia company disclosures or the annual report."
-            )
-        })
+        checks.append({"status":"warn","name":"Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
+            "detail":"Balance sheet data unavailable. Verify via annual report."})
         warnings.append("no_debt_data")
     elif debt_ratio > DEBT_THRESHOLD:
         sev = "fail" if debt_ratio > 0.50 else "warn"
-        checks.append({
-            "status": sev,
-            "name": "Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
-            "detail": (
-                f"Ratio is {debt_ratio*100:.1f}% — "
-                f"{'significantly ' if debt_ratio > 0.50 else 'marginally '}"
-                f"exceeds the AAOIFI 33% threshold. "
-                f"High reliance on interest-bearing debt (riba)."
-            )
-        })
-        if sev == "fail":
-            issues.append("high_debt")
-        else:
-            warnings.append("marginal_debt")
+        checks.append({"status":sev,"name":"Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
+            "detail":f"Ratio is {debt_ratio*100:.1f}% — {'significantly ' if debt_ratio>0.50 else 'marginally '}exceeds 33% AAOIFI threshold."})
+        issues.append("high_debt") if sev=="fail" else warnings.append("marginal_debt")
     else:
-        checks.append({
-            "status": "pass",
-            "name": "Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
-            "detail": f"Ratio is {debt_ratio*100:.1f}% — within the permissible 33% limit."
-        })
+        checks.append({"status":"pass","name":"Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
+            "detail":f"Ratio is {debt_ratio*100:.1f}% — within the permissible 33% limit."})
 
-    # ── Check 3: Non-permissible income (DJIM ≤ 5%) ──────
+    # Check 3: Interest income
     if interest_ratio is None:
-        checks.append({
-            "status": "warn",
-            "name": "Non-Permissible Revenue (DJIM: ≤ 5%)",
-            "detail": (
-                "Interest expense / revenue data unavailable from Yahoo Finance. "
-                "Verify manually via the company's annual report (look for 'interest income' in the income statement)."
-            )
-        })
+        checks.append({"status":"warn","name":"Non-Permissible Revenue (DJIM: ≤ 5%)",
+            "detail":"Interest/revenue data unavailable. Verify via annual report."})
         warnings.append("no_income_data")
     elif interest_ratio > INCOME_THRESHOLD:
         sev = "fail" if interest_ratio > 0.20 else "warn"
-        checks.append({
-            "status": sev,
-            "name": "Non-Permissible Revenue (DJIM: ≤ 5%)",
-            "detail": (
-                f"Interest expense is {interest_ratio*100:.1f}% of revenue — "
-                f"{'well above' if interest_ratio > 0.20 else 'above'} the 5% DJIM limit."
-            )
-        })
-        if sev == "fail":
-            issues.append("high_interest")
-        else:
-            warnings.append("marginal_interest")
+        checks.append({"status":sev,"name":"Non-Permissible Revenue (DJIM: ≤ 5%)",
+            "detail":f"Interest is {interest_ratio*100:.1f}% of revenue — {'well above' if interest_ratio>0.20 else 'above'} the 5% DJIM limit."})
+        issues.append("high_interest") if sev=="fail" else warnings.append("marginal_interest")
     else:
-        checks.append({
-            "status": "pass",
-            "name": "Non-Permissible Revenue (DJIM: ≤ 5%)",
-            "detail": f"Interest expense is {interest_ratio*100:.1f}% of revenue — within the permissible 5% limit."
-        })
+        checks.append({"status":"pass","name":"Non-Permissible Revenue (DJIM: ≤ 5%)",
+            "detail":f"Interest expense is {interest_ratio*100:.1f}% of revenue — within the 5% limit."})
 
-    # ── Check 4: Gharar — real value creation ─────────────
+    # Check 4: Gharar
     if pe_ratio is not None and pe_ratio < 0:
-        checks.append({
-            "status": "warn",
-            "name": "Gharar Check — Real Value Creation",
-            "detail": (
-                f"Negative P/E ratio ({pe_ratio:.1f}x) — company is currently loss-making. "
-                "Investing in a persistently loss-making company increases speculative risk (gharar). "
-                "Proceed with caution."
-            )
-        })
+        checks.append({"status":"warn","name":"Gharar Check — Real Value Creation",
+            "detail":f"Negative P/E ({pe_ratio:.1f}x) — company is loss-making. Increases speculative risk."})
         warnings.append("loss_making")
     elif profit_margin is not None and profit_margin < 0:
-        checks.append({
-            "status": "warn",
-            "name": "Gharar Check — Real Value Creation",
-            "detail": (
-                f"Negative profit margin ({profit_margin*100:.1f}%) — company is operating at a loss. "
-                "Review recent financial reports before investing."
-            )
-        })
+        checks.append({"status":"warn","name":"Gharar Check — Real Value Creation",
+            "detail":f"Negative profit margin ({profit_margin*100:.1f}%) — company operating at a loss."})
         warnings.append("loss_making")
     else:
-        checks.append({
-            "status": "pass",
-            "name": "Gharar Check — Real Value Creation",
-            "detail": (
-                "Company generates positive economic value. "
-                + (f"P/E ratio: {pe_ratio:.1f}x." if pe_ratio else "P/E data unavailable.")
-            )
-        })
+        checks.append({"status":"pass","name":"Gharar Check — Real Value Creation",
+            "detail":"Company generates positive economic value. " + (f"P/E: {pe_ratio:.1f}x." if pe_ratio else "P/E data unavailable.")})
 
-    # ── Overall verdict ───────────────────────────────────
-    if issues:
-        verdict = "Not Halal"
-        v_class = "haram"
-        v_icon  = "✗"
-        v_reason = "Fails one or more categorical Shariah screening criteria."
-    elif warnings:
-        verdict = "Doubtful"
-        v_class = "doubtful"
-        v_icon  = "◐"
-        v_reason = "Borderline on some criteria. Consult a qualified Islamic finance scholar."
-    else:
-        verdict = "Potentially Halal"
-        v_class = "halal"
-        v_icon  = "✓"
-        v_reason = "Passes all standard Shariah screening criteria. Always verify with a scholar."
+    if issues:    verdict,v_class,v_icon,v_reason = "Not Halal","haram","✗","Fails one or more categorical Shariah screening criteria."
+    elif warnings: verdict,v_class,v_icon,v_reason = "Doubtful","doubtful","◐","Borderline on some criteria. Consult a qualified Islamic finance scholar."
+    else:          verdict,v_class,v_icon,v_reason = "Potentially Halal","halal","✓","Passes all standard Shariah screening criteria. Always verify with a scholar."
 
-    # ── Risk level ────────────────────────────────────────
-    if issues:
-        risk = "HIGH"
+    if issues: risk = "HIGH"
     else:
-        score = 0
+        s = 0
         dr = debt_ratio or 0
-        if dr > 0.25: score += 2
-        elif dr > 0.15: score += 1
         pm = profit_margin or 0
-        if pm < 0: score += 2
-        elif pm < 0.05: score += 1
-        score += len(warnings)
-        risk = "HIGH" if score >= 4 else ("MEDIUM" if score >= 2 else "LOW")
+        if dr > 0.25: s+=2
+        elif dr > 0.15: s+=1
+        if pm < 0: s+=2
+        elif pm < 0.05: s+=1
+        s += len(warnings)
+        risk = "HIGH" if s>=4 else ("MEDIUM" if s>=2 else "LOW")
 
-    # ── Recommendation ────────────────────────────────────
-    if verdict == "Not Halal":
-        rec = "AVOID — Does not meet Shariah criteria."
-    elif verdict == "Doubtful":
-        rec = "CAUTION — Seek scholar's opinion before investing."
+    if verdict=="Not Halal":  rec = "AVOID — Does not meet Shariah criteria."
+    elif verdict=="Doubtful": rec = "CAUTION — Seek scholar's opinion before investing."
     else:
         pos = 0
-        pe  = pe_ratio or 0
-        pm2 = profit_margin or 0
-        if 5 < pe < 20:  pos += 1
-        if pm2 > 0.10:   pos += 1
-        if risk == "LOW" and pos >= 2:
-            rec = "BUY — Halal, low risk, solid fundamentals."
-        elif risk == "LOW":
-            rec = "HOLD / MONITOR — Halal and stable."
-        elif risk == "MEDIUM":
-            rec = "HOLD — Halal but moderate risk. Diversify."
-        else:
-            rec = "CAUTION — Halal but high volatility."
+        if pe_ratio and 5<pe_ratio<20: pos+=1
+        if profit_margin and profit_margin>0.10: pos+=1
+        if risk=="LOW" and pos>=2:  rec = "BUY — Halal, low risk, solid fundamentals."
+        elif risk=="LOW":           rec = "HOLD / MONITOR — Halal and stable."
+        elif risk=="MEDIUM":        rec = "HOLD — Halal but moderate risk. Diversify."
+        else:                       rec = "CAUTION — Halal but high volatility."
 
-    return {
-        "verdict":  verdict,
-        "vClass":   v_class,
-        "vIcon":    v_icon,
-        "vReason":  v_reason,
-        "checks":   checks,
-        "issues":   issues,
-        "warnings": warnings,
-        "risk":     risk,
-        "rec":      rec,
-    }
+    return {"verdict":verdict,"vClass":v_class,"vIcon":v_icon,"vReason":v_reason,
+            "checks":checks,"issues":issues,"warnings":warnings,"risk":risk,"rec":rec}
 
+# ── Dividend Purification ─────────────────────────────────
+def calc_purification(dividend, interest_ratio, currency="MYR"):
+    if interest_ratio is None or interest_ratio <= 0:
+        return {"dividend":dividend,"interestRatio":interest_ratio,
+                "purifyAmount":0.0,"keepAmount":dividend,"currency":currency,
+                "note":"No purification needed — interest ratio is zero or not applicable.","isRequired":False}
+    purify = round(dividend * interest_ratio, 4)
+    keep   = round(dividend - purify, 4)
+    intensity = "Small" if interest_ratio <= 0.05 else "Significant"
+    note = (f"{intensity} purification required. Donate {currency} {purify:.2f} to charity "
+            f"({interest_ratio*100:.1f}% of dividend). You keep {currency} {keep:.2f}.")
+    if interest_ratio > 0.05:
+        note += " Consider whether this stock is suitable for your portfolio."
+    return {"dividend":dividend,"interestRatio":interest_ratio,"purifyAmount":purify,
+            "keepAmount":keep,"currency":currency,"note":note,
+            "isRequired":purify>0,"percentage":round(interest_ratio*100,2)}
 
-# ══════════════════════════════════════════════════════════
-#  HTTP SERVER
-# ══════════════════════════════════════════════════════════
-
+# ── HTTP Handler ──────────────────────────────────────────
 class MizanHandler(BaseHTTPRequestHandler):
-
-    def log_message(self, format, *args):
-        # Cleaner console output
+    def log_message(self, fmt, *args):
         print(f"  [{self.command}] {self.path.split('?')[0]}  →  {args[1]}")
 
-    def send_json(self, data: dict, status: int = 200):
+    def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type","application/json; charset=utf-8")
         self.send_header("Content-Length", len(body))
-        # Allow requests from any local file / GitHub Pages
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Origin","*")
+        self.send_header("Access-Control-Allow-Methods","GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers","Content-Type")
         self.end_headers()
         self.wfile.write(body)
 
-    def do_OPTIONS(self):
-        self.send_json({}, 200)
+    def do_OPTIONS(self): self.send_json({}, 200)
 
     def do_GET(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+        path   = parsed.path
 
-        # ── GET /screen?symbol=1295 ───────────────────────
-        if parsed.path == "/screen":
-            symbol = params.get("symbol", [None])[0]
+        if path == "/screen":
+            symbol = params.get("symbol",[None])[0]
             if not symbol:
-                self.send_json({"error": "Missing ?symbol= parameter"}, 400)
-                return
+                return self.send_json({"ok":False,"error":"Missing ?symbol= parameter"},400)
+            if not re.match(r'^[A-Za-z0-9.\-]{1,12}$', symbol.strip()):
+                return self.send_json({"ok":False,"error":"Invalid ticker format."},400)
             try:
-                data = fetch_stock(symbol.strip())
-                self.send_json({"ok": True, "data": data})
+                data   = fetch_stock(symbol.strip())
+                cached = data.get("_cached",False)
+                if cached: print("       ↳ served from cache")
+                self.send_json({"ok":True,"data":data,"cached":cached})
             except Exception as e:
-                self.send_json({"ok": False, "error": str(e)}, 400)
+                self.send_json({"ok":False,"error":str(e)},400)
 
-        # ── GET /health ───────────────────────────────────
-        elif parsed.path == "/health":
-            self.send_json({"ok": True, "status": "Mizan backend running"})
+        elif path == "/purify":
+            try:
+                dividend       = float(params.get("dividend",      [0])[0])
+                interest_ratio = float(params.get("interest_ratio",[0])[0])
+                currency       = params.get("currency",["MYR"])[0].upper()[:3]
+                if dividend < 0 or not (0 <= interest_ratio <= 1):
+                    raise ValueError("Invalid parameters.")
+                self.send_json({"ok":True,"data":calc_purification(dividend,interest_ratio,currency)})
+            except Exception as e:
+                self.send_json({"ok":False,"error":str(e)},400)
+
+        elif path == "/cache/stats":
+            self.send_json({"ok":True,"data":cache_stats()})
+
+        elif path == "/cache/clear":
+            sym = params.get("symbol",[None])[0]
+            if sym: cache_clear(normalise_ticker(sym.strip())); msg = f"Cleared {sym}"
+            else:   cache_clear(); msg = "Full cache cleared"
+            self.send_json({"ok":True,"message":msg})
+
+        elif path == "/health":
+            self.send_json({"ok":True,"status":"Mizan backend running","cache":cache_stats()})
 
         else:
-            self.send_json({"error": "Not found"}, 404)
+            self.send_json({"error":"Not found"},404)
 
-
-# ══════════════════════════════════════════════════════════
-#  ENTRY POINT
-# ══════════════════════════════════════════════════════════
-
+# ── Entry Point ───────────────────────────────────────────
 PORT = 5000
 
 def main():
     print()
     print("╔══════════════════════════════════════════════════╗")
-    print("║  MIZAN Backend Server — Starting up             ║")
+    print("║  MIZAN Backend Server v2                        ║")
     print("╚══════════════════════════════════════════════════╝")
     print()
-    print(f"  ✓  Server running at  http://localhost:{PORT}")
-    print(f"  ✓  Open index.html in your browser to use the app")
-    print(f"  ✓  Press Ctrl+C to stop")
-    print()
-
+    load_sc_list()
+    print(f"  ✓  http://localhost:{PORT}")
+    print(f"  ✓  Cache TTL: {CACHE_TTL//60} min  |  SC list: built-in")
+    print(f"  ✓  Open index.html in your browser")
+    print(f"  ✓  Ctrl+C to stop\n")
     server = HTTPServer(("localhost", PORT), MizanHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n\n  Server stopped. بارك الله فيك\n")
+        print("\n  Server stopped. بارك الله فيك\n")
         server.server_close()
-
 
 if __name__ == "__main__":
     main()
