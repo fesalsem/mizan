@@ -60,6 +60,35 @@ def cache_stats():
         live = sum(1 for e in CACHE.values() if now < e["expires_at"])
         return {"cached": live, "total": len(CACHE), "ttl_seconds": CACHE_TTL}
 
+# ── Daily request counter ─────────────────────────────────
+# Tracks how many Alpha Vantage API calls used today
+_req_lock      = threading.Lock()
+_req_count     = 0
+_req_day       = time.strftime("%Y-%m-%d")
+AV_DAILY_LIMIT = 25
+
+def req_increment():
+    global _req_count, _req_day
+    with _req_lock:
+        today = time.strftime("%Y-%m-%d")
+        if today != _req_day:          # new day — reset counter
+            _req_count = 0
+            _req_day   = today
+        _req_count += 1
+        return _req_count
+
+def req_stats():
+    with _req_lock:
+        today = time.strftime("%Y-%m-%d")
+        if today != _req_day:
+            return {"used": 0, "remaining": AV_DAILY_LIMIT, "limit": AV_DAILY_LIMIT, "date": today}
+        return {
+            "used":      _req_count,
+            "remaining": max(0, AV_DAILY_LIMIT - _req_count),
+            "limit":     AV_DAILY_LIMIT,
+            "date":      _req_day,
+        }
+
 # ── SC Malaysia Shariah List ──────────────────────────────
 SC_LIST_FILE = Path(__file__).parent / "sc_shariah_list.json"
 _sc_list: dict = {}
@@ -236,28 +265,59 @@ def is_bursa(symbol: str) -> bool:
 # ══════════════════════════════════════════════════════════
 
 def av_get(params: dict, timeout: int = 15) -> dict:
-    """Make a request to Alpha Vantage API."""
+    """Make a request to Alpha Vantage API and count usage."""
     params["apikey"] = AV_KEY
+    used = req_increment()
+    print(f"  AV call #{used}: {params.get('function','?')} {params.get('symbol','')}")
     try:
         resp = requests.get(AV_BASE, params=params, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
-        # Check for AV error responses
+
+        # ── AV error responses ────────────────────────────
         if "Error Message" in data:
-            raise ValueError(f"Alpha Vantage: {data['Error Message']}")
+            err = data["Error Message"]
+            # Invalid ticker — friendly message
+            if "Invalid API call" in err or "ticker" in err.lower():
+                raise ValueError(
+                    f"Ticker not found. Check the stock code and try again. "
+                    f"US stocks: AAPL, TSLA, NVDA. Bursa: 1295, 1155, 5347."
+                )
+            raise ValueError(f"Alpha Vantage error: {err}")
+
         if "Note" in data:
-            raise ValueError(
-                "Alpha Vantage rate limit reached (25 requests/day on free tier). "
-                "Try again tomorrow or upgrade your API key at alphavantage.co"
-            )
+            # Per-minute limit hit (5 req/min on free tier) — not daily limit
+            note = data["Note"]
+            if "minute" in note.lower():
+                raise ValueError(
+                    "Too many requests per minute. "
+                    "Please wait 60 seconds and try again. "
+                    "(Free tier limit: 5 requests/minute)"
+                )
+            raise ValueError(f"Alpha Vantage note: {note}")
+
         if "Information" in data:
-            raise ValueError(
-                "Alpha Vantage daily limit reached. "
-                "The free tier allows 25 requests/day. Try again tomorrow."
-            )
+            info_msg = data["Information"]
+            # Could be: daily limit OR unactivated key OR premium feature
+            if "premium" in info_msg.lower():
+                raise ValueError(
+                    "This data requires an Alpha Vantage premium plan. "
+                    "Basic stock data should still work — try a different ticker."
+                )
+            if "thank you" in info_msg.lower() or "api call frequency" in info_msg.lower():
+                raise ValueError(
+                    f"Alpha Vantage daily limit reached ({AV_DAILY_LIMIT} requests/day on free tier). "
+                    f"Used today: {used}. Resets at midnight UTC. "
+                    f"Tip: previously screened stocks are cached for 30 minutes — check your watchlist."
+                )
+            # Unknown information message — log and continue if data present
+            print(f"  AV Information: {info_msg[:100]}")
+            if not any(data.values()):
+                raise ValueError(f"Alpha Vantage: {info_msg[:150]}")
+
         return data
     except requests.RequestException as e:
-        raise ValueError(f"Network error fetching data: {e}")
+        raise ValueError(f"Network error: {e}. Check your internet connection.")
 
 
 def fetch_quote(symbol: str) -> dict:
@@ -653,6 +713,7 @@ def root():
         "ok":      True,
         "message": "Mizan Backend Active — Alpha Vantage Edition",
         "cache":   cache_stats(),
+        "requests": req_stats(),
     })
 
 @app.route("/screen")
@@ -695,10 +756,19 @@ def clear_cache():
 @app.route("/health")
 def health():
     return jsonify({
-        "ok":     True,
-        "status": "Mizan backend running — Alpha Vantage",
-        "cache":  cache_stats(),
-        "av_key": "set" if AV_KEY else "MISSING",
+        "ok":      True,
+        "status":  "Mizan backend running — Alpha Vantage",
+        "cache":   cache_stats(),
+        "av_key":  "set" if AV_KEY else "MISSING",
+        "requests": req_stats(),
+    })
+
+@app.route("/usage")
+def usage():
+    """Check how many API requests have been used today."""
+    stats = req_stats()
+    return jsonify({"ok": True, "data": stats,
+        "message": f"Used {stats['used']} of {stats['limit']} requests today. {stats['remaining']} remaining."
     })
 
 if __name__ == "__main__":
