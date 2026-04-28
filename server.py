@@ -170,11 +170,33 @@ def fetch_stock(symbol):
         return r
 
     tk   = yf.Ticker(ticker_str)
-    info = tk.info or {}
+    try:
+        info = tk.info or {}
+    except Exception:
+        info = {}
 
+    # Guard: if info is empty or has no price data, try fast_info as fallback
+    if not isinstance(info, dict):
+        info = {}
     if not info or (info.get("regularMarketPrice") is None and
                     info.get("currentPrice")       is None and
                     info.get("previousClose")      is None):
+        # Try fast_info as a more reliable fallback
+        try:
+            fi = tk.fast_info
+            if fi and getattr(fi, 'last_price', None):
+                info = {
+                    "currentPrice":    fi.last_price,
+                    "previousClose":   getattr(fi, 'previous_close', fi.last_price),
+                    "fiftyTwoWeekHigh":getattr(fi, 'year_high', None),
+                    "fiftyTwoWeekLow": getattr(fi, 'year_low', None),
+                    "marketCap":       getattr(fi, 'market_cap', None),
+                    "volume":          getattr(fi, 'last_volume', None),
+                    "currency":        getattr(fi, 'currency', 'USD'),
+                    "exchange":        getattr(fi, 'exchange', 'N/A'),
+                }
+        except Exception:
+            pass
         if not any(ticker_str.endswith(s) for s in EXCHANGE_SUFFIXES) and not ticker_str[-1].isdigit():
             fb    = ticker_str + ".KL"
             tk2   = yf.Ticker(fb)
@@ -196,7 +218,7 @@ def fetch_stock(symbol):
     if total_assets is None or total_debt is None:
         try:
             bs = tk.balance_sheet
-            if bs is not None and not bs.empty:
+            if bs is not None and hasattr(bs, 'empty') and not bs.empty:
                 def get_bs(ns):
                     for n in ns:
                         m = [c for c in bs.index if n.lower() in c.lower()]
@@ -216,7 +238,7 @@ def fetch_stock(symbol):
     if total_revenue is None or interest_expense is None:
         try:
             inc = tk.income_stmt
-            if inc is not None and not inc.empty:
+            if inc is not None and hasattr(inc, 'empty') and not inc.empty:
                 def get_inc(ns):
                     for n in ns:
                         m = [c for c in inc.index if n.lower() in c.lower()]
@@ -237,7 +259,7 @@ def fetch_stock(symbol):
     history = []
     try:
         hist = tk.history(period="6mo", interval="1mo")
-        if not hist.empty:
+        if hist is not None and not hist.empty:
             for ts, row in hist.iterrows():
                 cl = row.get("Close")
                 if cl is not None and not (isinstance(cl,float) and math.isnan(cl)):
