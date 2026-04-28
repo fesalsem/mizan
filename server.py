@@ -495,7 +495,8 @@ class MizanHandler(BaseHTTPRequestHandler):
             self.send_json({"error":"Not found"},404)
 
 # ── Entry Point ───────────────────────────────────────────
-PORT = 5000
+import os
+PORT = int(os.environ.get('PORT', 5000))
 
 def main():
     print()
@@ -508,7 +509,7 @@ def main():
     print(f"  ✓  Cache TTL: {CACHE_TTL//60} min  |  SC list: built-in")
     print(f"  ✓  Open index.html in your browser")
     print(f"  ✓  Ctrl+C to stop\n")
-    server = HTTPServer(("localhost", PORT), MizanHandler)
+    server = HTTPServer(("0.0.0.0", PORT), MizanHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
