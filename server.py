@@ -7,6 +7,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 import sys
+import importlib.util
 
 def check_deps():
     missing = [p for p in ["yfinance","pandas"] if not __import__("importlib").util.find_spec(p)]
