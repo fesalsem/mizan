@@ -1,62 +1,43 @@
 """
-Mizan Backend Server v2
+Mizan Backend Server v3 — Alpha Vantage Edition
 Run: python server.py
+
+Data source switched from Yahoo Finance (blocked on cloud) to
+Alpha Vantage (official API, works reliably on Render/cloud servers).
+
+Requires environment variable: AV_API_KEY
+Get a free key at: https://www.alphavantage.co/support/#api-key
 """
-import json, math, time, threading, re, random
+import json, math, time, threading, re
 from flask import Flask, request, jsonify
 from pathlib import Path
 import os, sys, importlib.util
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-def check_deps():
-    missing = [p for p in ["yfinance","pandas","requests"] if not importlib.util.find_spec(p)]
-    if missing:
-        print(f"\n[ERROR] Missing: {', '.join(missing)}\nRun: pip install {' '.join(missing)}\n")
+# ── API Key ───────────────────────────────────────────────
+AV_KEY = os.environ.get("AV_API_KEY", "")
+AV_BASE = "https://www.alphavantage.co/query"
+
+def check_setup():
+    missing_pkgs = [p for p in ["requests"] if not importlib.util.find_spec(p)]
+    if missing_pkgs:
+        print(f"\n[ERROR] Missing packages: {', '.join(missing_pkgs)}")
         sys.exit(1)
-check_deps()
-import yfinance as yf
+    if not AV_KEY:
+        print("\n[ERROR] AV_API_KEY environment variable not set.")
+        print("  Get a free key at: https://www.alphavantage.co/support/#api-key")
+        print("  Then set it in Render: Environment → AV_API_KEY = your_key\n")
+        sys.exit(1)
+    print(f"  ✓  Alpha Vantage API key loaded")
 
-# ── Robust session for Yahoo Finance ─────────────────────────
-# Render/cloud IPs get rate-limited by Yahoo Finance.
-# Using a custom session with realistic browser headers and
-# automatic retries significantly improves reliability.
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
-
-def make_session():
-    """Create a requests session that mimics a real browser to avoid Yahoo rate limits."""
-    session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=1.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://",  adapter)
-    session.headers.update({
-        "User-Agent":      random.choice(USER_AGENTS),
-        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
-        "DNT":             "1",
-        "Connection":      "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    })
-    return session
+check_setup()
 
 # ── Cache ─────────────────────────────────────────────────
+# TTL is longer (30 min) since we have 25 req/day limit
 CACHE: dict = {}
-CACHE_TTL   = 900   # 15 minutes
+CACHE_TTL   = 1800  # 30 minutes
 _cache_lock = threading.Lock()
 
 def cache_get(key):
@@ -84,8 +65,6 @@ SC_LIST_FILE = Path(__file__).parent / "sc_shariah_list.json"
 _sc_list: dict = {}
 _sc_lock = threading.Lock()
 
-# Built-in subset of known SC Malaysia compliant/non-compliant stocks
-# Always verify against the official list at sc.com.my
 SC_COMPLIANT = {
     "1295","1155","4197","5347","5183","6012","6888","7277","5168",
     "3816","4588","5014","5020","5085","0072","0082","7084","7160",
@@ -132,12 +111,19 @@ def load_sc_list():
         return _sc_list
 
 def check_sc_list(ticker):
-    if not ticker.endswith(".KL"):
+    # Normalise: strip exchange suffixes for Bursa check
+    bursa_code = None
+    if ticker.endswith(".KL"):
+        bursa_code = ticker.replace(".KL", "").zfill(4)
+    elif ticker.isdigit():
+        bursa_code = ticker.zfill(4)
+
+    if not bursa_code:
         return {"found": False, "status": "not_applicable",
                 "note": "SC Malaysia list covers Bursa Malaysia stocks only."}
-    code = ticker.replace(".KL", "").zfill(4)
-    sc   = load_sc_list()
-    entry = sc.get(code)
+
+    sc    = load_sc_list()
+    entry = sc.get(bursa_code)
     if not entry:
         return {"found": False, "status": "not_found",
                 "note": "Not in built-in SC list. Verify manually at sc.com.my"}
@@ -145,9 +131,9 @@ def check_sc_list(ticker):
     return {
         "found":  True,
         "status": s,
-        "source": entry.get("source","builtin"),
+        "source": entry.get("source", "builtin"),
         "note": (
-            f"Listed as Shariah-{'compliant' if s=='compliant' else 'non-compliant'} "
+            f"Listed as Shariah-{'compliant' if s == 'compliant' else 'non-compliant'} "
             f"by SC Malaysia (built-in data). Always verify the latest list at sc.com.my"
         )
     }
@@ -168,11 +154,22 @@ DOUBTFUL_SECTORS = [
     "financial services","diversified financial","media","entertainment",
     "food & beverage","beverages","hospitality","hotel","hotels","restaurants",
 ]
+
+# Bursa Malaysia 4-digit codes and their AV-compatible symbol
+# Alpha Vantage uses format like "1295.KLS" for Bursa stocks
 EXCHANGE_SUFFIXES = {
-    ".KL":"Bursa Malaysia",".L":"LSE",".PA":"Euronext",".DE":"Frankfurt",
-    ".HK":"Hong Kong",".T":"Tokyo",".AX":"ASX",".SI":"Singapore",
-    ".SS":"Shanghai",".SZ":"Shenzhen",
+    ".KL":  "Bursa Malaysia",
+    ".L":   "London Stock Exchange",
+    ".PA":  "Euronext Paris",
+    ".DE":  "Frankfurt / XETRA",
+    ".HK":  "Hong Kong",
+    ".T":   "Tokyo",
+    ".AX":  "ASX Australia",
+    ".SI":  "Singapore",
+    ".SS":  "Shanghai",
+    ".SZ":  "Shenzhen",
 }
+
 US_KNOWN = {
     "AAPL","MSFT","GOOGL","GOOG","AMZN","TSLA","NVDA","META","NFLX","AMD",
     "INTC","QCOM","AVGO","TXN","MU","AMAT","LRCX","KLAC","JPM","BAC","GS",
@@ -182,209 +179,327 @@ US_KNOWN = {
     "SQ","COIN","BABA","JD","PDD","BIDU","NIO","XPEV","LI",
 }
 
-def normalise_ticker(symbol):
-    s = symbol.upper().strip().replace(" ","")
-    for sfx in EXCHANGE_SUFFIXES:
-        if s.endswith(sfx): return s
-    if s.isdigit():           return s.zfill(4) + ".KL"
-    if s in US_KNOWN:         return s
-    if s.isalpha() and len(s) <= 5: return s
-    return s
-
 def safe(v, d=None):
     if v is None: return d
-    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)): return d
+    try:
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)): return d
+    except Exception: return d
     return v
 
-# ── Data Fetching ─────────────────────────────────────────
-def get_ticker_info(ticker_str, retries=3):
-    """Fetch ticker info with retry + rotating user-agent to handle Yahoo rate limits on cloud."""
-    last_err = None
-    for attempt in range(retries):
-        try:
-            if attempt > 0:
-                time.sleep(2 * attempt)  # 2s, 4s backoff
-            sess = make_session()
-            tk   = yf.Ticker(ticker_str, session=sess)
-            # Primary: .info
-            try:
-                info = tk.info
-                if info and isinstance(info, dict) and (
-                    info.get("regularMarketPrice") or
-                    info.get("currentPrice") or
-                    info.get("previousClose")
-                ):
-                    return tk, info
-            except Exception as e:
-                last_err = e
-            # Fallback: fast_info (lighter, less rate-limited)
-            try:
-                fi = tk.fast_info
-                if fi and getattr(fi, 'last_price', None):
-                    return tk, {
-                        "currentPrice":     fi.last_price,
-                        "previousClose":    getattr(fi, 'previous_close', fi.last_price),
-                        "fiftyTwoWeekHigh": getattr(fi, 'year_high', None),
-                        "fiftyTwoWeekLow":  getattr(fi, 'year_low', None),
-                        "marketCap":        getattr(fi, 'market_cap', None),
-                        "volume":           getattr(fi, 'last_volume', None),
-                        "currency":         getattr(fi, 'currency', 'USD'),
-                        "exchange":         getattr(fi, 'exchange', 'N/A'),
-                        "longName":         ticker_str,
-                        "sector":           "N/A",
-                        "industry":         "N/A",
-                    }
-            except Exception as e:
-                last_err = e
-        except Exception as e:
-            last_err = e
-    raise ValueError(
-        f"Could not fetch '{ticker_str}' after {retries} attempts. "
-        f"Yahoo Finance may be rate-limiting this server. Try again in 30 seconds."
-    )
+def safe_float(v, d=None):
+    try:    return float(v) if v not in (None, "", "None", "N/A", "-") else d
+    except: return d
+
+def safe_int(v, d=None):
+    try:    return int(float(v)) if v not in (None, "", "None", "N/A", "-") else d
+    except: return d
+
+# ══════════════════════════════════════════════════════════
+#  TICKER NORMALISATION
+# ══════════════════════════════════════════════════════════
+
+def normalise_ticker(symbol: str) -> str:
+    """
+    Convert user input to a clean ticker string.
+    For Alpha Vantage: US stocks use plain symbol (AAPL),
+    Bursa stocks use 4-digit code (1295) — AV handles the exchange.
+    """
+    s = symbol.upper().strip().replace(" ", "")
+
+    # Already has exchange suffix — strip .KL for AV (it uses plain code)
+    if s.endswith(".KL"):
+        code = s.replace(".KL", "")
+        return code.zfill(4) if code.isdigit() else code
+
+    # Pure digits = Bursa code
+    if s.isdigit():
+        return s.zfill(4)
+
+    # Known US ticker
+    if s in US_KNOWN:
+        return s
+
+    # Short alpha string — treat as US ticker
+    if s.isalpha() and len(s) <= 5:
+        return s
+
+    return s
 
 
-def fetch_stock(symbol):
-    ticker_str = normalise_ticker(symbol)
-    cached = cache_get(ticker_str)
+def is_bursa(symbol: str) -> bool:
+    """Check if a symbol is a Bursa Malaysia stock."""
+    s = symbol.replace(".KL", "")
+    return s.isdigit()
+
+# ══════════════════════════════════════════════════════════
+#  ALPHA VANTAGE API CALLS
+# ══════════════════════════════════════════════════════════
+
+def av_get(params: dict, timeout: int = 15) -> dict:
+    """Make a request to Alpha Vantage API."""
+    params["apikey"] = AV_KEY
+    try:
+        resp = requests.get(AV_BASE, params=params, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        # Check for AV error responses
+        if "Error Message" in data:
+            raise ValueError(f"Alpha Vantage: {data['Error Message']}")
+        if "Note" in data:
+            raise ValueError(
+                "Alpha Vantage rate limit reached (25 requests/day on free tier). "
+                "Try again tomorrow or upgrade your API key at alphavantage.co"
+            )
+        if "Information" in data:
+            raise ValueError(
+                "Alpha Vantage daily limit reached. "
+                "The free tier allows 25 requests/day. Try again tomorrow."
+            )
+        return data
+    except requests.RequestException as e:
+        raise ValueError(f"Network error fetching data: {e}")
+
+
+def fetch_quote(symbol: str) -> dict:
+    """
+    Fetch real-time quote using GLOBAL_QUOTE endpoint.
+    Works for US stocks and international symbols.
+    """
+    # For Bursa, Alpha Vantage uses format like "1295.KLS"
+    av_symbol = symbol + ".KLS" if is_bursa(symbol) else symbol
+    data = av_get({"function": "GLOBAL_QUOTE", "symbol": av_symbol})
+    quote = data.get("Global Quote", {})
+    if not quote or not quote.get("05. price"):
+        # Retry without exchange suffix for Bursa
+        if is_bursa(symbol):
+            data  = av_get({"function": "GLOBAL_QUOTE", "symbol": symbol})
+            quote = data.get("Global Quote", {})
+    if not quote or not quote.get("05. price"):
+        raise ValueError(
+            f"No quote data found for '{symbol}'. "
+            "Check the stock code or try the full ticker (e.g. AAPL, TSLA, 1295)."
+        )
+    return quote
+
+
+def fetch_overview(symbol: str) -> dict:
+    """
+    Fetch company overview — name, sector, industry, financial ratios.
+    This is the main source of fundamental data.
+    """
+    av_symbol = symbol + ".KLS" if is_bursa(symbol) else symbol
+    data = av_get({"function": "OVERVIEW", "symbol": av_symbol})
+    if not data or not data.get("Symbol"):
+        if is_bursa(symbol):
+            data = av_get({"function": "OVERVIEW", "symbol": symbol})
+    return data if data and data.get("Symbol") else {}
+
+
+def fetch_income_statement(symbol: str) -> dict:
+    """Fetch annual income statement for interest/revenue ratio."""
+    av_symbol = symbol + ".KLS" if is_bursa(symbol) else symbol
+    try:
+        data = av_get({"function": "INCOME_STATEMENT", "symbol": av_symbol})
+        reports = data.get("annualReports", [])
+        return reports[0] if reports else {}
+    except Exception:
+        return {}
+
+
+def fetch_balance_sheet(symbol: str) -> dict:
+    """Fetch annual balance sheet for debt/assets ratio."""
+    av_symbol = symbol + ".KLS" if is_bursa(symbol) else symbol
+    try:
+        data = av_get({"function": "BALANCE_SHEET", "symbol": av_symbol})
+        reports = data.get("annualReports", [])
+        return reports[0] if reports else {}
+    except Exception:
+        return {}
+
+
+def fetch_history(symbol: str) -> list:
+    """
+    Fetch 6-month monthly price history using TIME_SERIES_MONTHLY.
+    Returns list of {date, close, open, high, low, volume} dicts.
+    """
+    av_symbol = symbol + ".KLS" if is_bursa(symbol) else symbol
+    try:
+        data = av_get({"function": "TIME_SERIES_MONTHLY", "symbol": av_symbol})
+        series = data.get("Monthly Time Series", {})
+        if not series and is_bursa(symbol):
+            data   = av_get({"function": "TIME_SERIES_MONTHLY", "symbol": symbol})
+            series = data.get("Monthly Time Series", {})
+
+        history = []
+        # Sort by date descending, take last 6 months
+        for date_str in sorted(series.keys(), reverse=True)[:6]:
+            row = series[date_str]
+            history.insert(0, {
+                "date":   date_str[:7],   # YYYY-MM
+                "close":  safe_float(row.get("4. close"),  0),
+                "open":   safe_float(row.get("1. open"),   0),
+                "high":   safe_float(row.get("2. high"),   0),
+                "low":    safe_float(row.get("3. low"),    0),
+                "volume": safe_int(row.get("5. volume"),   0),
+            })
+        return history
+    except Exception:
+        return []
+
+# ══════════════════════════════════════════════════════════
+#  MAIN FETCH FUNCTION
+#  Uses 2 AV API calls per stock (quote + overview)
+#  Balance sheet + income stmt are best-effort (2 more calls)
+#  History is best-effort (1 more call)
+#  With caching, most stocks only cost 1-2 calls/day
+# ══════════════════════════════════════════════════════════
+
+def fetch_stock(symbol: str) -> dict:
+    ticker = normalise_ticker(symbol)
+
+    # ── Cache check ───────────────────────────────────────
+    cached = cache_get(ticker)
     if cached:
         r = dict(cached); r["_cached"] = True
         return r
 
-    try:
-        tk, info = get_ticker_info(ticker_str)
-    except ValueError as primary_err:
-        # Ambiguous ticker — try appending .KL as fallback
-        if not any(ticker_str.endswith(s) for s in EXCHANGE_SUFFIXES) and not ticker_str[-1].isdigit():
-            try:
-                tk, info = get_ticker_info(ticker_str + ".KL")
-                ticker_str = ticker_str + ".KL"
-            except ValueError:
-                raise primary_err
-        else:
-            raise primary_err
+    print(f"  Fetching {ticker} from Alpha Vantage...")
 
-    price      = safe(info.get("currentPrice") or info.get("regularMarketPrice") or 0)
-    prev_close = safe(info.get("previousClose") or price)
-    change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0.0
+    # ── 1. Real-time quote (1 API call) ───────────────────
+    quote = fetch_quote(ticker)
 
-    total_assets = safe(info.get("totalAssets"))
-    total_debt   = safe(info.get("totalDebt"))
+    price      = safe_float(quote.get("05. price"),          0)
+    prev_close = safe_float(quote.get("08. previous close"), price)
+    change_pct = safe_float(quote.get("10. change percent", "0%").replace("%",""), 0)
+    volume     = safe_int(quote.get("06. volume"),           0)
+    week_high  = safe_float(quote.get("03. high"),           price)  # day high as proxy
+    week_low   = safe_float(quote.get("04. low"),            price)  # day low as proxy
 
-    if total_assets is None or total_debt is None:
-        try:
-            bs = tk.balance_sheet
-            if bs is not None and not bs.empty:
-                def get_bs(ns):
-                    for n in ns:
-                        m = [c for c in bs.index if n.lower() in c.lower()]
-                        if m:
-                            v = bs.loc[m[0]].iloc[0]
-                            if v is not None and not (isinstance(v,float) and math.isnan(v)):
-                                return float(v)
-                    return None
-                if total_assets is None: total_assets = get_bs(["Total Assets","TotalAssets"])
-                if total_debt   is None: total_debt   = get_bs(["Total Debt","Long Term Debt","LongTermDebt","Total Long Term Debt","Short Long Term Debt"])
-        except Exception: pass
+    # ── 2. Company overview + fundamentals (1 API call) ───
+    overview = fetch_overview(ticker)
 
-    total_revenue    = safe(info.get("totalRevenue"))
-    interest_expense = safe(info.get("interestExpense"))
-    gross_profit     = safe(info.get("grossProfits"))
+    name        = overview.get("Name")      or ticker
+    sector      = overview.get("Sector")    or "N/A"
+    industry    = overview.get("Industry")  or "N/A"
+    description = (overview.get("Description") or "")[:400]
+    exchange    = overview.get("Exchange")  or "N/A"
+    currency    = overview.get("Currency")  or ("MYR" if is_bursa(ticker) else "USD")
+    market_cap  = safe_int(overview.get("MarketCapitalization"))
 
-    if total_revenue is None or interest_expense is None:
-        try:
-            inc = tk.income_stmt
-            if inc is not None and not inc.empty:
-                def get_inc(ns):
-                    for n in ns:
-                        m = [c for c in inc.index if n.lower() in c.lower()]
-                        if m:
-                            v = inc.loc[m[0]].iloc[0]
-                            if v is not None and not (isinstance(v,float) and math.isnan(v)):
-                                return float(v)
-                    return None
-                if total_revenue    is None: total_revenue    = get_inc(["Total Revenue","TotalRevenue","Revenue"])
-                if interest_expense is None:
-                    ie = get_inc(["Interest Expense","InterestExpense"])
-                    interest_expense = abs(ie) if ie is not None else None
-        except Exception: pass
+    # Valuation ratios — all directly in overview
+    pe_ratio    = safe_float(overview.get("TrailingPE") or overview.get("ForwardPE"))
+    pb_ratio    = safe_float(overview.get("PriceToBookRatio"))
+    profit_margin    = safe_float(overview.get("ProfitMargin"))
+    return_on_equity = safe_float(overview.get("ReturnOnEquityTTM"))
+    return_on_assets = safe_float(overview.get("ReturnOnAssetsTTM"))
+    dividend_yield   = safe_float(overview.get("DividendYield"))
+    beta             = safe_float(overview.get("Beta"))
+    week52_high      = safe_float(overview.get("52WeekHigh")) or week_high
+    week52_low       = safe_float(overview.get("52WeekLow"))  or week_low
+    revenue_growth   = safe_float(overview.get("QuarterlyRevenueGrowthYOY"))
+    earnings_growth  = safe_float(overview.get("QuarterlyEarningsGrowthYOY"))
 
-    debt_ratio     = (total_debt / total_assets)       if (total_assets and total_debt   is not None and total_assets > 0)  else None
-    interest_ratio = (abs(interest_expense)/total_revenue) if (total_revenue and interest_expense is not None and total_revenue > 0) else None
+    # ── 3. Balance sheet (1 API call) ─────────────────────
+    bs           = fetch_balance_sheet(ticker)
+    total_assets = safe_float(bs.get("totalAssets"))
+    total_debt   = safe_float(
+        bs.get("longTermDebt") or bs.get("shortLongTermDebtTotal") or bs.get("totalLiabilities")
+    )
+    current_ratio = safe_float(bs.get("currentRatio"))
 
-    history = []
-    try:
-        hist = tk.history(period="6mo", interval="1mo")
-        if not hist.empty:
-            for ts, row in hist.iterrows():
-                cl = row.get("Close")
-                if cl is not None and not (isinstance(cl,float) and math.isnan(cl)):
-                    history.append({
-                        "date":   ts.strftime("%b %y"),
-                        "close":  round(float(cl),4),
-                        "open":   round(float(row.get("Open",cl)),4),
-                        "high":   round(float(row.get("High",cl)),4),
-                        "low":    round(float(row.get("Low", cl)),4),
-                        "volume": int(row.get("Volume",0) or 0),
-                    })
-    except Exception: pass
+    # ── 4. Income statement (1 API call) ──────────────────
+    inc           = fetch_income_statement(ticker)
+    total_revenue = safe_float(inc.get("totalRevenue"))
+    int_expense   = safe_float(inc.get("interestExpense"))
+    gross_profit  = safe_float(inc.get("grossProfit"))
 
-    sc_check  = check_sc_list(ticker_str)
+    # Fallback: use overview values if income stmt empty
+    if total_revenue is None:
+        total_revenue = safe_float(overview.get("RevenueTTM"))
+    if gross_profit is None:
+        gross_profit  = safe_float(overview.get("GrossProfitTTM"))
+
+    # ── 5. Compute Shariah ratios ─────────────────────────
+    debt_ratio = (
+        total_debt / total_assets
+        if total_assets and total_debt is not None and total_assets > 0
+        else None
+    )
+    interest_ratio = (
+        abs(int_expense) / total_revenue
+        if total_revenue and int_expense is not None and total_revenue > 0
+        else None
+    )
+
+    # ── 6. Price history (1 API call) ─────────────────────
+    history = fetch_history(ticker)
+
+    # ── 7. SC Malaysia check ──────────────────────────────
+    sc_check  = check_sc_list(ticker)
+
+    # ── 8. Shariah screening ──────────────────────────────
     screening = screen_halal(
-        name=info.get("longName") or info.get("shortName") or ticker_str,
-        sector=info.get("sector") or "",
-        industry=info.get("industry") or "",
-        description=(info.get("longBusinessSummary") or "")[:500],
+        name=name, sector=sector, industry=industry, description=description,
         debt_ratio=debt_ratio, interest_ratio=interest_ratio,
-        pe_ratio=safe(info.get("trailingPE") or info.get("forwardPE")),
-        profit_margin=safe(info.get("profitMargins")),
-        sc_check=sc_check,
+        pe_ratio=pe_ratio, profit_margin=profit_margin, sc_check=sc_check,
     )
 
     result = {
-        "ticker":        ticker_str,
-        "name":          info.get("longName") or info.get("shortName") or ticker_str,
-        "sector":        info.get("sector") or "N/A",
-        "industry":      info.get("industry") or "N/A",
-        "description":   (info.get("longBusinessSummary") or "")[:400],
-        "exchange":      info.get("exchange") or "N/A",
-        "currency":      info.get("currency") or "MYR",
-        "price":         round(price,4),
-        "prevClose":     round(prev_close,4),
-        "changePct":     round(change_pct,3),
-        "week52High":    round(safe(info.get("fiftyTwoWeekHigh"),0),4),
-        "week52Low":     round(safe(info.get("fiftyTwoWeekLow"),0),4),
-        "volume":        int(safe(info.get("volume") or info.get("regularMarketVolume"),0)),
-        "avgVolume":     int(v) if (v:=safe(info.get("averageVolume"))) else None,
-        "marketCap":     int(v) if (v:=safe(info.get("marketCap")))    else None,
-        "beta":          round(v,3) if (v:=safe(info.get("beta")))     else None,
-        "totalAssets":   int(total_assets)   if total_assets   else None,
-        "totalDebt":     int(total_debt)     if total_debt     else None,
-        "totalRevenue":  int(total_revenue)  if total_revenue  else None,
-        "interestExpense": int(abs(interest_expense)) if interest_expense else None,
-        "grossProfit":   int(gross_profit)   if gross_profit   else None,
-        "debtRatio":     round(debt_ratio,4)     if debt_ratio     is not None else None,
-        "interestRatio": round(interest_ratio,4) if interest_ratio is not None else None,
-        "peRatio":        round(v,2)  if (v:=safe(info.get("trailingPE") or info.get("forwardPE"))) else None,
-        "pbRatio":        round(v,3)  if (v:=safe(info.get("priceToBook")))                         else None,
-        "profitMargin":   round(v,4)  if (v:=safe(info.get("profitMargins")))    is not None else None,
-        "returnOnEquity": round(v,4)  if (v:=safe(info.get("returnOnEquity")))   is not None else None,
-        "returnOnAssets": round(v,4)  if (v:=safe(info.get("returnOnAssets")))   is not None else None,
-        "dividendYield":  round(v,4)  if (v:=safe(info.get("dividendYield") or info.get("trailingAnnualDividendYield"))) else None,
-        "earningsGrowth": round(v,4)  if (v:=safe(info.get("earningsGrowth") or info.get("earningsQuarterlyGrowth")))   is not None else None,
-        "revenueGrowth":  round(v,4)  if (v:=safe(info.get("revenueGrowth")))    is not None else None,
-        "currentRatio":   round(v,3)  if (v:=safe(info.get("currentRatio")))     is not None else None,
-        "quickRatio":     round(v,3)  if (v:=safe(info.get("quickRatio")))       is not None else None,
-        "history":       history,
-        "scCheck":       sc_check,
-        "screening":     screening,
-        "fetchedAt":     time.strftime("%H:%M:%S"),
-        "_cached":       False,
+        # Identity
+        "ticker":       ticker,
+        "name":         name,
+        "sector":       sector,
+        "industry":     industry,
+        "description":  description,
+        "exchange":     exchange,
+        "currency":     currency,
+        # Price
+        "price":        round(price, 4),
+        "prevClose":    round(prev_close, 4),
+        "changePct":    round(change_pct, 3),
+        "week52High":   round(week52_high, 4) if week52_high else None,
+        "week52Low":    round(week52_low,  4) if week52_low  else None,
+        "volume":       volume,
+        "avgVolume":    None,   # not in AV free tier
+        "marketCap":    market_cap,
+        "beta":         round(beta, 3) if beta else None,
+        # Financials
+        "totalAssets":    safe_int(total_assets),
+        "totalDebt":      safe_int(total_debt),
+        "totalRevenue":   safe_int(total_revenue),
+        "interestExpense":safe_int(abs(int_expense)) if int_expense else None,
+        "grossProfit":    safe_int(gross_profit),
+        # Ratios
+        "debtRatio":     round(debt_ratio, 4)     if debt_ratio     is not None else None,
+        "interestRatio": round(interest_ratio, 4) if interest_ratio is not None else None,
+        # Valuation
+        "peRatio":        round(pe_ratio, 2)         if pe_ratio         else None,
+        "pbRatio":        round(pb_ratio, 3)          if pb_ratio         else None,
+        "profitMargin":   round(profit_margin, 4)     if profit_margin    is not None else None,
+        "returnOnEquity": round(return_on_equity, 4)  if return_on_equity is not None else None,
+        "returnOnAssets": round(return_on_assets, 4)  if return_on_assets is not None else None,
+        "dividendYield":  round(dividend_yield, 4)    if dividend_yield   is not None else None,
+        "earningsGrowth": round(earnings_growth, 4)   if earnings_growth  is not None else None,
+        "revenueGrowth":  round(revenue_growth, 4)    if revenue_growth   is not None else None,
+        "currentRatio":   round(current_ratio, 3)     if current_ratio    is not None else None,
+        "quickRatio":     None,  # not in AV free tier
+        # History & screening
+        "history":    history,
+        "scCheck":    sc_check,
+        "screening":  screening,
+        "fetchedAt":  time.strftime("%H:%M:%S"),
+        "_cached":    False,
+        "_source":    "Alpha Vantage",
     }
-    cache_set(ticker_str, result)
+
+    cache_set(ticker, result)
     return result
 
-# ── Screening Engine ──────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════
+#  SHARIAH SCREENING ENGINE (unchanged)
+# ══════════════════════════════════════════════════════════
+
 def screen_halal(name, sector, industry, description,
                  debt_ratio, interest_ratio, pe_ratio,
                  profit_margin, sc_check=None):
@@ -402,7 +517,7 @@ def screen_halal(name, sector, industry, description,
                 "detail":f"✗ Listed as non-Shariah-compliant by SC Malaysia. {sc_check.get('note','')}"})
             issues.append("sc_non_compliant")
     elif sc_check and sc_check.get("status") == "not_applicable":
-        pass  # international stock — skip
+        pass
     else:
         checks.append({"status":"warn","name":"SC Malaysia Official Shariah List",
             "detail":"Not found in built-in SC list. Verify manually at sc.com.my"})
@@ -418,11 +533,11 @@ def screen_halal(name, sector, industry, description,
         ds = next((d for d in DOUBTFUL_SECTORS if d in combined), None)
         if ds:
             checks.append({"status":"warn","name":"Business Activity / Industry",
-                "detail":f'Sector "{sector or "N/A"}" may have mixed income sources. Requires verification.'})
+                "detail":f'Sector "{sector}" may have mixed income sources. Requires verification.'})
             warnings.append("doubtful_sector")
         else:
             checks.append({"status":"pass","name":"Business Activity / Industry",
-                "detail":f'Sector ({sector or "N/A"}) / Industry ({industry or "N/A"}) — no prohibited activity detected.'})
+                "detail":f'Sector ({sector}) / Industry ({industry}) — no prohibited activity detected.'})
 
     # Check 2: Debt ratio
     if debt_ratio is None:
@@ -463,17 +578,20 @@ def screen_halal(name, sector, industry, description,
         warnings.append("loss_making")
     else:
         checks.append({"status":"pass","name":"Gharar Check — Real Value Creation",
-            "detail":"Company generates positive economic value. " + (f"P/E: {pe_ratio:.1f}x." if pe_ratio else "P/E data unavailable.")})
+            "detail":"Company generates positive economic value. " +
+                     (f"P/E: {pe_ratio:.1f}x." if pe_ratio else "P/E data unavailable.")})
 
-    if issues:    verdict,v_class,v_icon,v_reason = "Not Halal","haram","✗","Fails one or more categorical Shariah screening criteria."
-    elif warnings: verdict,v_class,v_icon,v_reason = "Doubtful","doubtful","◐","Borderline on some criteria. Consult a qualified Islamic finance scholar."
-    else:          verdict,v_class,v_icon,v_reason = "Potentially Halal","halal","✓","Passes all standard Shariah screening criteria. Always verify with a scholar."
+    if issues:
+        verdict,v_class,v_icon,v_reason = "Not Halal","haram","✗","Fails one or more categorical Shariah screening criteria."
+    elif warnings:
+        verdict,v_class,v_icon,v_reason = "Doubtful","doubtful","◐","Borderline on some criteria. Consult a qualified Islamic finance scholar."
+    else:
+        verdict,v_class,v_icon,v_reason = "Potentially Halal","halal","✓","Passes all standard Shariah screening criteria. Always verify with a scholar."
 
     if issues: risk = "HIGH"
     else:
         s = 0
-        dr = debt_ratio or 0
-        pm = profit_margin or 0
+        dr = debt_ratio or 0; pm = profit_margin or 0
         if dr > 0.25: s+=2
         elif dr > 0.15: s+=1
         if pm < 0: s+=2
@@ -495,14 +613,19 @@ def screen_halal(name, sector, industry, description,
     return {"verdict":verdict,"vClass":v_class,"vIcon":v_icon,"vReason":v_reason,
             "checks":checks,"issues":issues,"warnings":warnings,"risk":risk,"rec":rec}
 
-# ── Dividend Purification ─────────────────────────────────
+
+# ══════════════════════════════════════════════════════════
+#  DIVIDEND PURIFICATION CALCULATOR (unchanged)
+# ══════════════════════════════════════════════════════════
+
 def calc_purification(dividend, interest_ratio, currency="MYR"):
     if interest_ratio is None or interest_ratio <= 0:
         return {"dividend":dividend,"interestRatio":interest_ratio,
                 "purifyAmount":0.0,"keepAmount":dividend,"currency":currency,
-                "note":"No purification needed — interest ratio is zero or not applicable.","isRequired":False}
-    purify = round(dividend * interest_ratio, 4)
-    keep   = round(dividend - purify, 4)
+                "note":"No purification needed — interest ratio is zero or not applicable.",
+                "isRequired":False}
+    purify    = round(dividend * interest_ratio, 4)
+    keep      = round(dividend - purify, 4)
     intensity = "Small" if interest_ratio <= 0.05 else "Significant"
     note = (f"{intensity} purification required. Donate {currency} {purify:.2f} to charity "
             f"({interest_ratio*100:.1f}% of dividend). You keep {currency} {keep:.2f}.")
@@ -512,46 +635,77 @@ def calc_purification(dividend, interest_ratio, currency="MYR"):
             "keepAmount":keep,"currency":currency,"note":note,
             "isRequired":purify>0,"percentage":round(interest_ratio*100,2)}
 
-# ── Flask Routes (The New HTTP Handler) ───────────────────
+
+# ══════════════════════════════════════════════════════════
+#  FLASK ROUTES
+# ══════════════════════════════════════════════════════════
+
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Origin"]  = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
-@app.route('/')
+@app.route("/")
 def root():
-    return jsonify({"ok": True, "message": "Mizan Backend Active"})
+    return jsonify({
+        "ok":      True,
+        "message": "Mizan Backend Active — Alpha Vantage Edition",
+        "cache":   cache_stats(),
+    })
 
-@app.route('/screen')
+@app.route("/screen")
 def screen():
-    symbol = request.args.get('symbol')
-    if not symbol or not re.match(r'^[A-Za-z0-9.\-]{1,12}$', symbol.strip()):
+    symbol = request.args.get("symbol","").strip()
+    if not symbol or not re.match(r'^[A-Za-z0-9.\-]{1,12}$', symbol):
         return jsonify({"ok": False, "error": "Invalid or missing symbol"}), 400
     try:
-        return jsonify({"ok": True, "data": fetch_stock(symbol.strip())})
+        data   = fetch_stock(symbol)
+        cached = data.get("_cached", False)
+        return jsonify({"ok": True, "data": data, "cached": cached})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
-@app.route('/purify')
+@app.route("/purify")
 def purify():
     try:
-        div = float(request.args.get('dividend', 0))
-        rat = float(request.args.get('interest_ratio', 0))
-        cur = request.args.get('currency', 'MYR').upper()[:3]
+        div = float(request.args.get("dividend",       0))
+        rat = float(request.args.get("interest_ratio", 0))
+        cur = request.args.get("currency", "MYR").upper()[:3]
+        if div < 0 or not (0 <= rat <= 1):
+            raise ValueError("Invalid parameters.")
         return jsonify({"ok": True, "data": calc_purification(div, rat, cur)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
-@app.route('/cache/stats')
+@app.route("/cache/stats")
 def stats():
     return jsonify({"ok": True, "data": cache_stats()})
 
-@app.route('/health')
+@app.route("/cache/clear")
+def clear_cache():
+    sym = request.args.get("symbol")
+    if sym:
+        cache_clear(normalise_ticker(sym.strip()))
+        return jsonify({"ok": True, "message": f"Cleared cache for {sym}"})
+    cache_clear()
+    return jsonify({"ok": True, "message": "Full cache cleared"})
+
+@app.route("/health")
 def health():
-    return jsonify({"ok": True, "status": "Mizan backend running", "cache": cache_stats()})
+    return jsonify({
+        "ok":     True,
+        "status": "Mizan backend running — Alpha Vantage",
+        "cache":  cache_stats(),
+        "av_key": "set" if AV_KEY else "MISSING",
+    })
 
 if __name__ == "__main__":
     load_sc_list()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    print("\n╔══════════════════════════════════════════════════╗")
+    print("║  MIZAN Backend v3 — Alpha Vantage Edition       ║")
+    print("╚══════════════════════════════════════════════════╝\n")
+    print(f"  ✓  Cache TTL: {CACHE_TTL//60} minutes")
+    print(f"  ✓  Data source: Alpha Vantage (25 req/day free)")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
