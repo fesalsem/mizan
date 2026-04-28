@@ -952,7 +952,10 @@ const STEPS = [
    API — talks to local Python backend (server.py)
 ══════════════════════════════════════════════════════════ */
 
-const API = 'http://localhost:5000';
+// Auto-detect: use Render backend in production, localhost in development
+const API = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'
+  ? 'http://localhost:5000'
+  : 'https://mizan-backend.onrender.com';
 
 async function fetchStockData(symbol) {
   // Check backend is running first
