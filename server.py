@@ -2,22 +2,57 @@
 Mizan Backend Server v2
 Run: python server.py
 """
-import json, math, time, threading, re
+import json, math, time, threading, re, random
 from flask import Flask, request, jsonify
 from pathlib import Path
-import os
-import sys
-import importlib.util
+import os, sys, importlib.util
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
 def check_deps():
-    missing = [p for p in ["yfinance","pandas"] if not __import__("importlib").util.find_spec(p)]
+    missing = [p for p in ["yfinance","pandas","requests"] if not importlib.util.find_spec(p)]
     if missing:
         print(f"\n[ERROR] Missing: {', '.join(missing)}\nRun: pip install {' '.join(missing)}\n")
         sys.exit(1)
 check_deps()
 import yfinance as yf
+
+# ── Robust session for Yahoo Finance ─────────────────────────
+# Render/cloud IPs get rate-limited by Yahoo Finance.
+# Using a custom session with realistic browser headers and
+# automatic retries significantly improves reliability.
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
+
+def make_session():
+    """Create a requests session that mimics a real browser to avoid Yahoo rate limits."""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://",  adapter)
+    session.headers.update({
+        "User-Agent":      random.choice(USER_AGENTS),
+        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT":             "1",
+        "Connection":      "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    })
+    return session
 
 # ── Cache ─────────────────────────────────────────────────
 CACHE: dict = {}
@@ -162,6 +197,53 @@ def safe(v, d=None):
     return v
 
 # ── Data Fetching ─────────────────────────────────────────
+def get_ticker_info(ticker_str, retries=3):
+    """Fetch ticker info with retry + rotating user-agent to handle Yahoo rate limits on cloud."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            if attempt > 0:
+                time.sleep(2 * attempt)  # 2s, 4s backoff
+            sess = make_session()
+            tk   = yf.Ticker(ticker_str, session=sess)
+            # Primary: .info
+            try:
+                info = tk.info
+                if info and isinstance(info, dict) and (
+                    info.get("regularMarketPrice") or
+                    info.get("currentPrice") or
+                    info.get("previousClose")
+                ):
+                    return tk, info
+            except Exception as e:
+                last_err = e
+            # Fallback: fast_info (lighter, less rate-limited)
+            try:
+                fi = tk.fast_info
+                if fi and getattr(fi, 'last_price', None):
+                    return tk, {
+                        "currentPrice":     fi.last_price,
+                        "previousClose":    getattr(fi, 'previous_close', fi.last_price),
+                        "fiftyTwoWeekHigh": getattr(fi, 'year_high', None),
+                        "fiftyTwoWeekLow":  getattr(fi, 'year_low', None),
+                        "marketCap":        getattr(fi, 'market_cap', None),
+                        "volume":           getattr(fi, 'last_volume', None),
+                        "currency":         getattr(fi, 'currency', 'USD'),
+                        "exchange":         getattr(fi, 'exchange', 'N/A'),
+                        "longName":         ticker_str,
+                        "sector":           "N/A",
+                        "industry":         "N/A",
+                    }
+            except Exception as e:
+                last_err = e
+        except Exception as e:
+            last_err = e
+    raise ValueError(
+        f"Could not fetch '{ticker_str}' after {retries} attempts. "
+        f"Yahoo Finance may be rate-limiting this server. Try again in 30 seconds."
+    )
+
+
 def fetch_stock(symbol):
     ticker_str = normalise_ticker(symbol)
     cached = cache_get(ticker_str)
@@ -169,44 +251,18 @@ def fetch_stock(symbol):
         r = dict(cached); r["_cached"] = True
         return r
 
-    tk   = yf.Ticker(ticker_str)
     try:
-        info = tk.info or {}
-    except Exception:
-        info = {}
-
-    # Guard: if info is empty or has no price data, try fast_info as fallback
-    if not isinstance(info, dict):
-        info = {}
-    if not info or (info.get("regularMarketPrice") is None and
-                    info.get("currentPrice")       is None and
-                    info.get("previousClose")      is None):
-        # Try fast_info as a more reliable fallback
-        try:
-            fi = tk.fast_info
-            if fi and getattr(fi, 'last_price', None):
-                info = {
-                    "currentPrice":    fi.last_price,
-                    "previousClose":   getattr(fi, 'previous_close', fi.last_price),
-                    "fiftyTwoWeekHigh":getattr(fi, 'year_high', None),
-                    "fiftyTwoWeekLow": getattr(fi, 'year_low', None),
-                    "marketCap":       getattr(fi, 'market_cap', None),
-                    "volume":          getattr(fi, 'last_volume', None),
-                    "currency":        getattr(fi, 'currency', 'USD'),
-                    "exchange":        getattr(fi, 'exchange', 'N/A'),
-                }
-        except Exception:
-            pass
+        tk, info = get_ticker_info(ticker_str)
+    except ValueError as primary_err:
+        # Ambiguous ticker — try appending .KL as fallback
         if not any(ticker_str.endswith(s) for s in EXCHANGE_SUFFIXES) and not ticker_str[-1].isdigit():
-            fb    = ticker_str + ".KL"
-            tk2   = yf.Ticker(fb)
-            info2 = tk2.info or {}
-            if info2.get("regularMarketPrice") or info2.get("currentPrice") or info2.get("previousClose"):
-                ticker_str = fb; tk = tk2; info = info2
-            else:
-                raise ValueError(f"No data found for '{ticker_str}'. Check the stock code.")
+            try:
+                tk, info = get_ticker_info(ticker_str + ".KL")
+                ticker_str = ticker_str + ".KL"
+            except ValueError:
+                raise primary_err
         else:
-            raise ValueError(f"No data found for '{ticker_str}'. Check the stock code.")
+            raise primary_err
 
     price      = safe(info.get("currentPrice") or info.get("regularMarketPrice") or 0)
     prev_close = safe(info.get("previousClose") or price)
@@ -218,7 +274,7 @@ def fetch_stock(symbol):
     if total_assets is None or total_debt is None:
         try:
             bs = tk.balance_sheet
-            if bs is not None and hasattr(bs, 'empty') and not bs.empty:
+            if bs is not None and not bs.empty:
                 def get_bs(ns):
                     for n in ns:
                         m = [c for c in bs.index if n.lower() in c.lower()]
@@ -238,7 +294,7 @@ def fetch_stock(symbol):
     if total_revenue is None or interest_expense is None:
         try:
             inc = tk.income_stmt
-            if inc is not None and hasattr(inc, 'empty') and not inc.empty:
+            if inc is not None and not inc.empty:
                 def get_inc(ns):
                     for n in ns:
                         m = [c for c in inc.index if n.lower() in c.lower()]
@@ -259,7 +315,7 @@ def fetch_stock(symbol):
     history = []
     try:
         hist = tk.history(period="6mo", interval="1mo")
-        if hist is not None and not hist.empty:
+        if not hist.empty:
             for ts, row in hist.iterrows():
                 cl = row.get("Close")
                 if cl is not None and not (isinstance(cl,float) and math.isnan(cl)):
