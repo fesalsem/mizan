@@ -3,11 +3,12 @@ Mizan Backend Server v2
 Run: python server.py
 """
 import json, math, time, threading, re
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from flask import Flask, request, jsonify
 from pathlib import Path
 import sys
 import importlib.util
+
+app = Flask(__name__)
 
 def check_deps():
     missing = [p for p in ["yfinance","pandas"] if not __import__("importlib").util.find_spec(p)]
@@ -432,90 +433,46 @@ def calc_purification(dividend, interest_ratio, currency="MYR"):
             "keepAmount":keep,"currency":currency,"note":note,
             "isRequired":purify>0,"percentage":round(interest_ratio*100,2)}
 
-# ── HTTP Handler ──────────────────────────────────────────
-class MizanHandler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        print(f"  [{self.command}] {self.path.split('?')[0]}  →  {args[1]}")
+# ── Flask Routes (The New HTTP Handler) ───────────────────
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
-    def send_json(self, data, status=200):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type","application/json; charset=utf-8")
-        self.send_header("Content-Length", len(body))
-        self.send_header("Access-Control-Allow-Origin","*")
-        self.send_header("Access-Control-Allow-Methods","GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers","Content-Type")
-        self.end_headers()
-        self.wfile.write(body)
+@app.route('/')
+def root():
+    return jsonify({"ok": True, "message": "Mizan Backend Active"})
 
-    def do_OPTIONS(self): self.send_json({}, 200)
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
-        path   = parsed.path
-
-        if path == "/screen":
-            symbol = params.get("symbol",[None])[0]
-            if not symbol:
-                return self.send_json({"ok":False,"error":"Missing ?symbol= parameter"},400)
-            if not re.match(r'^[A-Za-z0-9.\-]{1,12}$', symbol.strip()):
-                return self.send_json({"ok":False,"error":"Invalid ticker format."},400)
-            try:
-                data   = fetch_stock(symbol.strip())
-                cached = data.get("_cached",False)
-                if cached: print("       ↳ served from cache")
-                self.send_json({"ok":True,"data":data,"cached":cached})
-            except Exception as e:
-                self.send_json({"ok":False,"error":str(e)},400)
-
-        elif path == "/purify":
-            try:
-                dividend       = float(params.get("dividend",      [0])[0])
-                interest_ratio = float(params.get("interest_ratio",[0])[0])
-                currency       = params.get("currency",["MYR"])[0].upper()[:3]
-                if dividend < 0 or not (0 <= interest_ratio <= 1):
-                    raise ValueError("Invalid parameters.")
-                self.send_json({"ok":True,"data":calc_purification(dividend,interest_ratio,currency)})
-            except Exception as e:
-                self.send_json({"ok":False,"error":str(e)},400)
-
-        elif path == "/cache/stats":
-            self.send_json({"ok":True,"data":cache_stats()})
-
-        elif path == "/cache/clear":
-            sym = params.get("symbol",[None])[0]
-            if sym: cache_clear(normalise_ticker(sym.strip())); msg = f"Cleared {sym}"
-            else:   cache_clear(); msg = "Full cache cleared"
-            self.send_json({"ok":True,"message":msg})
-
-        elif path == "/health":
-            self.send_json({"ok":True,"status":"Mizan backend running","cache":cache_stats()})
-
-        else:
-            self.send_json({"error":"Not found"},404)
-
-# ── Entry Point ───────────────────────────────────────────
-import os
-PORT = int(os.environ.get('PORT', 5000))
-
-def main():
-    print()
-    print("╔══════════════════════════════════════════════════╗")
-    print("║  MIZAN Backend Server v2                        ║")
-    print("╚══════════════════════════════════════════════════╝")
-    print()
-    load_sc_list()
-    print(f"  ✓  http://localhost:{PORT}")
-    print(f"  ✓  Cache TTL: {CACHE_TTL//60} min  |  SC list: built-in")
-    print(f"  ✓  Open index.html in your browser")
-    print(f"  ✓  Ctrl+C to stop\n")
-    server = HTTPServer(("0.0.0.0", PORT), MizanHandler)
+@app.route('/screen')
+def screen():
+    symbol = request.args.get('symbol')
+    if not symbol or not re.match(r'^[A-Za-z0-9.\-]{1,12}$', symbol.strip()):
+        return jsonify({"ok": False, "error": "Invalid or missing symbol"}), 400
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  Server stopped. بارك الله فيك\n")
-        server.server_close()
+        return jsonify({"ok": True, "data": fetch_stock(symbol.strip())})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+@app.route('/purify')
+def purify():
+    try:
+        div = float(request.args.get('dividend', 0))
+        rat = float(request.args.get('interest_ratio', 0))
+        cur = request.args.get('currency', 'MYR').upper()[:3]
+        return jsonify({"ok": True, "data": calc_purification(div, rat, cur)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+@app.route('/cache/stats')
+def stats():
+    return jsonify({"ok": True, "data": cache_stats()})
+
+@app.route('/health')
+def health():
+    return jsonify({"ok": True, "status": "Mizan backend running", "cache": cache_stats()})
 
 if __name__ == "__main__":
-    main()
+    load_sc_list()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
