@@ -602,6 +602,290 @@ def is_bursa(symbol: str) -> bool:
 #  TIINGO API (US & international stocks)
 # ══════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════
+#  US STOCK DATABASE
+#  For tickers not available on Tiingo free tier.
+#  Data from public SEC filings / annual reports (FY2023/2024)
+# ══════════════════════════════════════════════════════════
+
+US_DB = {
+    "NVDA": {
+        "name": "NVIDIA Corporation", "sector": "Technology",
+        "industry": "Semiconductors", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.17, "interest_ratio": 0.006,
+        "pe": 66.2, "pb": 42.8, "profit_margin": 0.55, "roe": 1.23,
+        "dividend_yield": 0.0003, "market_cap": 3_000_000_000_000,
+        "total_assets": 65_728_000_000, "total_debt": 8_462_000_000,
+        "total_revenue": 60_922_000_000, "interest_expense": 369_000_000,
+        "description": "NVIDIA designs GPUs for gaming, data centres, and AI. Dominant in AI/ML accelerator chips.",
+    },
+    "TSLA": {
+        "name": "Tesla, Inc.", "sector": "Consumer Cyclical",
+        "industry": "Auto Manufacturers", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.14, "interest_ratio": 0.009,
+        "pe": 60.4, "pb": 12.2, "profit_margin": 0.08, "roe": 0.19,
+        "dividend_yield": 0.0, "market_cap": 800_000_000_000,
+        "total_assets": 106_618_000_000, "total_debt": 5_245_000_000,
+        "total_revenue": 97_690_000_000, "interest_expense": 863_000_000,
+        "description": "Tesla designs and manufactures electric vehicles, energy storage systems, and solar products.",
+    },
+    "GOOGL": {
+        "name": "Alphabet Inc. (Google)", "sector": "Communication Services",
+        "industry": "Internet Content & Information", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.10, "interest_ratio": 0.005,
+        "pe": 22.4, "pb": 6.2, "profit_margin": 0.24, "roe": 0.31,
+        "dividend_yield": 0.005, "market_cap": 2_100_000_000_000,
+        "total_assets": 402_392_000_000, "total_debt": 29_142_000_000,
+        "total_revenue": 307_394_000_000, "interest_expense": 1_234_000_000,
+        "description": "Alphabet operates Google Search, YouTube, Google Cloud, and other technology services.",
+    },
+    "GOOG": {
+        "name": "Alphabet Inc. (Google) Class C", "sector": "Communication Services",
+        "industry": "Internet Content & Information", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.10, "interest_ratio": 0.005,
+        "pe": 22.4, "pb": 6.2, "profit_margin": 0.24, "roe": 0.31,
+        "dividend_yield": 0.005, "market_cap": 2_100_000_000_000,
+        "total_assets": 402_392_000_000, "total_debt": 29_142_000_000,
+        "total_revenue": 307_394_000_000, "interest_expense": 1_234_000_000,
+        "description": "Alphabet operates Google Search, YouTube, Google Cloud, and other technology services.",
+    },
+    "AMZN": {
+        "name": "Amazon.com, Inc.", "sector": "Consumer Cyclical",
+        "industry": "Internet Retail", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.22, "interest_ratio": 0.011,
+        "pe": 44.8, "pb": 9.8, "profit_margin": 0.09, "roe": 0.22,
+        "dividend_yield": 0.0, "market_cap": 2_200_000_000_000,
+        "total_assets": 527_854_000_000, "total_debt": 58_314_000_000,
+        "total_revenue": 574_785_000_000, "interest_expense": 3_282_000_000,
+        "description": "Amazon operates e-commerce, AWS cloud computing, digital streaming, and logistics.",
+    },
+    "META": {
+        "name": "Meta Platforms, Inc.", "sector": "Communication Services",
+        "industry": "Internet Content & Information", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.09, "interest_ratio": 0.004,
+        "pe": 28.6, "pb": 9.2, "profit_margin": 0.35, "roe": 0.38,
+        "dividend_yield": 0.004, "market_cap": 1_400_000_000_000,
+        "total_assets": 229_623_000_000, "total_debt": 28_826_000_000,
+        "total_revenue": 134_902_000_000, "interest_expense": 567_000_000,
+        "description": "Meta operates Facebook, Instagram, WhatsApp and develops virtual/augmented reality.",
+    },
+    "AMD": {
+        "name": "Advanced Micro Devices, Inc.", "sector": "Technology",
+        "industry": "Semiconductors", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.06, "interest_ratio": 0.014,
+        "pe": 112.4, "pb": 4.4, "profit_margin": 0.04, "roe": 0.04,
+        "dividend_yield": 0.0, "market_cap": 250_000_000_000,
+        "total_assets": 67_885_000_000, "total_debt": 1_723_000_000,
+        "total_revenue": 22_680_000_000, "interest_expense": 311_000_000,
+        "description": "AMD designs CPUs, GPUs, and semi-custom chips for data centres, PCs, and gaming consoles.",
+    },
+    "AVGO": {
+        "name": "Broadcom Inc.", "sector": "Technology",
+        "industry": "Semiconductors", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.38, "interest_ratio": 0.072,
+        "pe": 28.4, "pb": 12.6, "profit_margin": 0.22, "roe": 0.48,
+        "dividend_yield": 0.012, "market_cap": 900_000_000_000,
+        "total_assets": 165_645_000_000, "total_debt": 66_664_000_000,
+        "total_revenue": 35_819_000_000, "interest_expense": 2_566_000_000,
+        "description": "Broadcom designs semiconductors and infrastructure software for data centres and networking.",
+    },
+    "NFLX": {
+        "name": "Netflix, Inc.", "sector": "Communication Services",
+        "industry": "Entertainment", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.24, "interest_ratio": 0.022,
+        "pe": 48.2, "pb": 16.4, "profit_margin": 0.16, "roe": 0.38,
+        "dividend_yield": 0.0, "market_cap": 380_000_000_000,
+        "total_assets": 48_731_000_000, "total_debt": 14_144_000_000,
+        "total_revenue": 33_723_000_000, "interest_expense": 754_000_000,
+        "description": "Netflix is a global streaming entertainment platform offering TV shows, films, and games.",
+    },
+    "JPM": {
+        "name": "JPMorgan Chase & Co.", "sector": "Financial Services",
+        "industry": "Banks — Diversified", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.91, "interest_ratio": None,
+        "pe": 12.8, "pb": 2.0, "profit_margin": 0.28, "roe": 0.17,
+        "dividend_yield": 0.024, "market_cap": 740_000_000_000,
+        "total_assets": 3_875_393_000_000, "total_debt": None,
+        "total_revenue": 162_395_000_000, "interest_expense": None,
+        "description": "JPMorgan Chase is a global financial services firm. Core business is interest-based banking (riba).",
+        "note": "Conventional banking operations involve riba — not halal.",
+    },
+    "BAC": {
+        "name": "Bank of America Corporation", "sector": "Financial Services",
+        "industry": "Banks — Diversified", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.90, "interest_ratio": None,
+        "pe": 14.2, "pb": 1.2, "profit_margin": 0.24, "roe": 0.09,
+        "dividend_yield": 0.026, "market_cap": 350_000_000_000,
+        "total_assets": 3_318_340_000_000, "total_debt": None,
+        "total_revenue": 101_912_000_000, "interest_expense": None,
+        "description": "Bank of America provides banking, investment, and financial services. Core business is interest-based.",
+        "note": "Conventional banking operations involve riba — not halal.",
+    },
+    "XOM": {
+        "name": "Exxon Mobil Corporation", "sector": "Energy",
+        "industry": "Oil & Gas Integrated", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.12, "interest_ratio": 0.008,
+        "pe": 14.2, "pb": 2.2, "profit_margin": 0.09, "roe": 0.16,
+        "dividend_yield": 0.034, "market_cap": 520_000_000_000,
+        "total_assets": 376_317_000_000, "total_debt": 37_483_000_000,
+        "total_revenue": 398_675_000_000, "interest_expense": 836_000_000,
+        "description": "ExxonMobil is an integrated oil and gas company engaged in exploration, production and refining.",
+    },
+    "WMT": {
+        "name": "Walmart Inc.", "sector": "Consumer Defensive",
+        "industry": "Discount Stores", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.24, "interest_ratio": 0.009,
+        "pe": 38.4, "pb": 6.8, "profit_margin": 0.025, "roe": 0.18,
+        "dividend_yield": 0.010, "market_cap": 780_000_000_000,
+        "total_assets": 254_396_000_000, "total_debt": 37_090_000_000,
+        "total_revenue": 648_125_000_000, "interest_expense": 2_395_000_000,
+        "description": "Walmart operates retail stores and e-commerce. Sells alcohol (some stores) but primary business is retail.",
+    },
+    "V": {
+        "name": "Visa Inc.", "sector": "Financial Services",
+        "industry": "Credit Services", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.21, "interest_ratio": 0.019,
+        "pe": 30.4, "pb": 14.2, "profit_margin": 0.53, "roe": 0.49,
+        "dividend_yield": 0.008, "market_cap": 620_000_000_000,
+        "total_assets": 87_888_000_000, "total_debt": 20_876_000_000,
+        "total_revenue": 32_653_000_000, "interest_expense": 617_000_000,
+        "description": "Visa operates a global payment processing network. Does not issue credit or lend money directly.",
+    },
+    "MA": {
+        "name": "Mastercard Incorporated", "sector": "Financial Services",
+        "industry": "Credit Services", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.28, "interest_ratio": 0.022,
+        "pe": 36.2, "pb": 60.4, "profit_margin": 0.46, "roe": 2.12,
+        "dividend_yield": 0.006, "market_cap": 480_000_000_000,
+        "total_assets": 40_102_000_000, "total_debt": 13_987_000_000,
+        "total_revenue": 25_098_000_000, "interest_expense": 545_000_000,
+        "description": "Mastercard operates a global payment network. Does not issue credit directly.",
+    },
+    "JNJ": {
+        "name": "Johnson & Johnson", "sector": "Healthcare",
+        "industry": "Drug Manufacturers", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.22, "interest_ratio": 0.012,
+        "pe": 16.8, "pb": 5.2, "profit_margin": 0.18, "roe": 0.30,
+        "dividend_yield": 0.032, "market_cap": 380_000_000_000,
+        "total_assets": 167_558_000_000, "total_debt": 25_881_000_000,
+        "total_revenue": 85_159_000_000, "interest_expense": 1_004_000_000,
+        "description": "J&J develops pharmaceuticals, medical devices, and consumer health products.",
+    },
+    "NKE": {
+        "name": "NIKE, Inc.", "sector": "Consumer Cyclical",
+        "industry": "Footwear & Accessories", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.28, "interest_ratio": 0.014,
+        "pe": 22.6, "pb": 8.4, "profit_margin": 0.10, "roe": 0.44,
+        "dividend_yield": 0.020, "market_cap": 120_000_000_000,
+        "total_assets": 37_748_000_000, "total_debt": 8_930_000_000,
+        "total_revenue": 51_362_000_000, "interest_expense": 733_000_000,
+        "description": "Nike designs and sells athletic footwear, apparel, and equipment globally.",
+    },
+    "BABA": {
+        "name": "Alibaba Group Holding Limited", "sector": "Consumer Cyclical",
+        "industry": "Internet Retail", "exchange": "NYSE", "currency": "USD",
+        "debt_ratio": 0.14, "interest_ratio": 0.018,
+        "pe": 10.2, "pb": 1.2, "profit_margin": 0.14, "roe": 0.11,
+        "dividend_yield": 0.016, "market_cap": 220_000_000_000,
+        "total_assets": 277_860_000_000, "total_debt": 28_862_000_000,
+        "total_revenue": 130_352_000_000, "interest_expense": 1_142_000_000,
+        "description": "Alibaba operates e-commerce, cloud computing, and digital payments in China and globally.",
+        "note": "Ant Group (Alipay) fintech arm involves interest-based lending. Interest ratio may be understated.",
+    },
+    "COIN": {
+        "name": "Coinbase Global, Inc.", "sector": "Financial Services",
+        "industry": "Financial Data & Stock Exchanges", "exchange": "NASDAQ", "currency": "USD",
+        "debt_ratio": 0.18, "interest_ratio": 0.028,
+        "pe": 28.4, "pb": 6.2, "profit_margin": 0.12, "roe": 0.22,
+        "dividend_yield": 0.0, "market_cap": 65_000_000_000,
+        "total_assets": 24_618_000_000, "total_debt": 4_208_000_000,
+        "total_revenue": 3_108_000_000, "interest_expense": 168_000_000,
+        "description": "Coinbase operates a cryptocurrency exchange platform.",
+        "note": "Crypto trading involves significant speculation (gharar). Scholars differ on permissibility.",
+    },
+}
+
+
+def fetch_us_db_stock(ticker: str) -> dict:
+    """Return US stock data from built-in database with live price from Tiingo."""
+    db = US_DB[ticker]
+
+    # Try to get live price from Tiingo
+    price = None; prev_close = None; change_pct = 0.0; volume = None
+    try:
+        iex = tiingo_get(f"iex/{ticker}")
+        if iex and isinstance(iex, list) and iex:
+            q          = iex[0]
+            price      = safe_float(q.get("last") or q.get("tngoLast"))
+            prev_close = safe_float(q.get("prevClose"), price)
+            change_pct = ((price - prev_close) / prev_close * 100) if (price and prev_close) else 0.0
+            volume     = safe_int(q.get("volume"))
+    except Exception:
+        pass
+
+    # Try historical prices for chart
+    history = []
+    try:
+        import datetime
+        start = (datetime.date.today() - datetime.timedelta(days=180)).isoformat()
+        hist  = tiingo_get(f"tiingo/daily/{ticker}/prices",
+                           {"startDate": start, "resampleFreq": "monthly"})
+        if hist and isinstance(hist, list):
+            for row in hist[-6:]:
+                cl = safe_float(row.get("adjClose") or row.get("close"), 0)
+                history.append({
+                    "date":   row.get("date","")[:7],
+                    "close":  cl, "open": cl, "high": cl, "low": cl,
+                    "volume": safe_int(row.get("volume"), 0),
+                })
+    except Exception:
+        pass
+
+    dr = db.get("debt_ratio")
+    ir = db.get("interest_ratio")
+    sc_check  = check_sc_list(ticker)
+    screening = screen_halal(
+        name=db["name"], sector=db["sector"], industry=db["industry"],
+        description=db.get("description","") + " " + db.get("note",""),
+        debt_ratio=dr, interest_ratio=ir,
+        pe_ratio=db.get("pe"), profit_margin=db.get("profit_margin"),
+        sc_check=sc_check,
+    )
+
+    return {
+        "ticker": ticker, "name": db["name"],
+        "sector": db["sector"], "industry": db["industry"],
+        "description": db.get("description",""),
+        "exchange": db.get("exchange","NASDAQ"), "currency": "USD",
+        "price":      round(price, 4) if price else None,
+        "prevClose":  round(prev_close, 4) if prev_close else None,
+        "changePct":  round(change_pct, 3),
+        "week52High": None, "week52Low": None,
+        "volume": volume, "avgVolume": None,
+        "marketCap": db.get("market_cap"),
+        "beta": None,
+        "totalAssets":    db.get("total_assets"),
+        "totalDebt":      db.get("total_debt"),
+        "totalRevenue":   db.get("total_revenue"),
+        "interestExpense":db.get("interest_expense"),
+        "grossProfit": None,
+        "debtRatio":     dr,
+        "interestRatio": ir,
+        "peRatio":        db.get("pe"),
+        "pbRatio":        db.get("pb"),
+        "profitMargin":   db.get("profit_margin"),
+        "returnOnEquity": db.get("roe"),
+        "returnOnAssets": None,
+        "dividendYield":  db.get("dividend_yield"),
+        "earningsGrowth": None, "revenueGrowth": None,
+        "currentRatio": None, "quickRatio": None,
+        "history": history, "scCheck": sc_check, "screening": screening,
+        "fetchedAt": time.strftime("%H:%M:%S"),
+        "_cached": False, "_source": "US DB (SEC FY2023/2024) + Tiingo live price",
+        "_dataNote": "Financial ratios from SEC public filings (FY2023/2024). Price fetched live where available.",
+    }
+
 def tiingo_get(path: str, params: dict = None) -> any:
     """Make a Tiingo API request."""
     used = req_increment()
@@ -617,6 +901,8 @@ def tiingo_get(path: str, params: dict = None) -> any:
             raise ValueError("Invalid Tiingo API key. Check TIINGO_API_KEY in Render environment.")
         if resp.status_code == 404:
             return None
+        if resp.status_code == 400:
+            return None   # Ticker not on Tiingo free tier — caller handles fallback
         if resp.status_code == 429:
             raise ValueError("Tiingo rate limit hit. Please wait a moment and try again.")
         if not resp.ok:
@@ -629,14 +915,23 @@ def tiingo_get(path: str, params: dict = None) -> any:
 
 
 def fetch_us_stock(ticker: str) -> dict:
-    """Fetch US/international stock data from Tiingo."""
+    """
+    Fetch US/international stock data.
+    Tries Tiingo first; falls back to US built-in database if Tiingo
+    returns 400 (ticker not on free plan).
+    """
 
     # 1. Metadata (name, description, exchange)
     meta = tiingo_get(f"tiingo/daily/{ticker}")
     if not meta:
+        # Tiingo doesn't carry this ticker on free tier — try built-in DB
+        if ticker in US_DB:
+            print(f"  → Tiingo unavailable for {ticker}, using US_DB")
+            return fetch_us_db_stock(ticker)
         raise ValueError(
-            f"Ticker '{ticker}' not found on Tiingo. "
-            "Check the symbol — US examples: AAPL, TSLA, NVDA, MSFT."
+            f"Ticker '{ticker}' not found. "
+            "US examples: AAPL, MSFT, TSLA, NVDA, GOOGL, AMZN. "
+            "Bursa examples: 1295, 1155, 5347."
         )
 
     name        = meta.get("name")        or ticker
