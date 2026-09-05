@@ -2,41 +2,54 @@
 
 > A full-stack web application that screens Bursa Malaysia and US stocks for Shariah compliance in real time, using a Python backend and a browser-based frontend.
 
-**Tech Stack:** Python · JavaScript · REST API · Yahoo Finance API (`yfinance`)
+**Tech Stack:** Python · JavaScript · REST API · Tiingo API (US/global data) · Bursa Malaysia database
+
+**Live:** https://mizan-eft5.onrender.com
 
 ---
 
 ## Project Description
 
-Developed a full-stack web application that screens Bursa Malaysia and US stocks for Shariah compliance in real time, using a Python backend and a browser-based frontend. Implemented automated financial data retrieval via Yahoo Finance API to compute key Islamic finance metrics including Debt-to-Assets ratio and non-permissible income percentage, following AAOIFI and DJIM standards. Designed an interactive dashboard with live stock screening, watchlist tracking, 6-month price chart, and buy/hold/avoid recommendations to support data-driven halal investment decisions.
+Developed a full-stack web application that screens Bursa Malaysia and US stocks for Shariah compliance in real time, using a Python backend and a browser-based frontend. Implemented automated financial data retrieval via the Tiingo API (US/global) and a hardcoded Bursa Malaysia database to compute key Islamic finance metrics including Debt-to-Assets ratio and non-permissible income percentage, following AAOIFI and DJIM standards. Designed an interactive dashboard with live stock screening, watchlist tracking, 6-month price chart, and buy/hold/avoid recommendations to support data-driven halal investment decisions.
 
 ---
 
 ## Architecture
 
 ```
-index.html  ←→  server.py  ←→  Yahoo Finance
+index.html  ←→  server.py  ←→  Tiingo API + Bursa DB
 (Browser UI)    (Python backend)  (Live data)
 ```
 
-The Python backend handles all data fetching and Shariah screening logic. The frontend is a single HTML file that calls the backend and renders results — no frameworks, no build step.
+The Python backend handles all data fetching and Shariah screening logic. The frontend is a single HTML file that calls the backend and renders results — no frameworks, no build step. The backend serves the frontend directly at `/`, so a single URL hosts the whole app.
 
 ---
 
 ## Quick Start
 
-### 1. Install dependencies (one time only)
+### 1. Set your Tiingo API key
+The backend needs a free [Tiingo](https://api.tiingo.com) API key for US/global stock data.
+
+```bash
+# Linux / macOS
+export TIINGO_API_KEY="your_key_here"
+
+# Windows (PowerShell)
+$env:TIINGO_API_KEY="your_key_here"
+```
+
+### 2. Install dependencies (one time only)
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Start the backend
+### 3. Start the backend
 ```bash
 python server.py
 ```
 
-### 3. Open the app
-Double-click `index.html`. Keep the terminal running in the background.
+### 4. Open the app
+Visit **http://localhost:5000** in your browser. The backend serves the frontend directly, so there's no need to open `index.html` separately. Keep the terminal running in the background.
 
 ---
 
