@@ -10,12 +10,15 @@ Requires environment variable: TIINGO_API_KEY
 Get a free key at: https://api.tiingo.com (instant signup)
 """
 import json, math, time, threading, re
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from pathlib import Path
 import os, sys, importlib.util
 import requests
 
 app = Flask(__name__)
+
+# Directory where server.py (and index.html) live.
+BASE_DIR = Path(__file__).resolve().parent
 
 # ── API Setup ─────────────────────────────────────────────
 TIINGO_KEY  = os.environ.get("TIINGO_API_KEY", "")
@@ -1344,6 +1347,12 @@ def add_cors(response):
 
 @app.route("/")
 def root():
+    return send_from_directory(BASE_DIR, "index.html")
+
+
+@app.route("/api/info")
+def api_info():
+    """Machine-readable backend status (the old root JSON)."""
     return jsonify({"ok":True,"message":"Mizan Backend v5 — Hybrid Edition",
                     "cache":cache_stats(),"requests":req_stats(),
                     "bursa_stocks":len(BURSA_DB)})

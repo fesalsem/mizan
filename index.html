@@ -952,10 +952,11 @@ const STEPS = [
    API — talks to local Python backend (server.py)
 ══════════════════════════════════════════════════════════ */
 
-// Auto-detect: use Render backend in production, localhost in development
+// Auto-detect: use localhost in development, same-origin in production
+// (the frontend is now served by the same Flask backend that hosts these APIs).
 const API = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'
   ? 'http://localhost:5000'
-  : 'https://mizan-eft5.onrender.com';
+  : '';
 
 async function fetchStockData(symbol) {
   // Check backend is running first
