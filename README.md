@@ -1,68 +1,34 @@
 # Mizan — ميزان — Halal Investment Screener
 
-> A full-stack web application that screens Bursa Malaysia and US stocks for Shariah compliance in real time, using a Python backend and a browser-based frontend.
+> Search any Bursa Malaysia or US stock and get an instant Shariah-compliance verdict — halal, doubtful, or not halal — with the financial reasoning behind it.
 
-**Tech Stack:** Python · JavaScript · REST API · Tiingo API (US/global data) · Bursa Malaysia database
+## 🚀 Try it now
 
-**Live:** https://mizan-eft5.onrender.com
+**https://mizan-eft5.onrender.com**
 
----
-
-## Project Description
-
-Developed a full-stack web application that screens Bursa Malaysia and US stocks for Shariah compliance in real time, using a Python backend and a browser-based frontend. Implemented automated financial data retrieval via the Tiingo API (US/global) and a hardcoded Bursa Malaysia database to compute key Islamic finance metrics including Debt-to-Assets ratio and non-permissible income percentage, following AAOIFI and DJIM standards. Designed an interactive dashboard with live stock screening, watchlist tracking, 6-month price chart, and buy/hold/avoid recommendations to support data-driven halal investment decisions.
+No install, no setup — just open the link and search. Enter a 4-digit Bursa Malaysia code (e.g. `1295`, `1155`) or a US ticker (e.g. `TSLA`, `AAPL`).
 
 ---
 
-## Architecture
+## How to use
 
-```
-index.html  ←→  server.py  ←→  Tiingo API + Bursa DB
-(Browser UI)    (Python backend)  (Live data)
-```
+1. **Open** the app: https://mizan-eft5.onrender.com
+2. **Type** a stock code or ticker into the search box
+3. **Read** the verdict and the numbers behind it
 
-The Python backend handles all data fetching and Shariah screening logic. The frontend is a single HTML file that calls the backend and renders results — no frameworks, no build step. The backend serves the frontend directly at `/`, so a single URL hosts the whole app.
-
----
-
-## Quick Start
-
-### 1. Set your Tiingo API key
-The backend needs a free [Tiingo](https://api.tiingo.com) API key for US/global stock data.
-
-```bash
-# Linux / macOS
-export TIINGO_API_KEY="your_key_here"
-
-# Windows (PowerShell)
-$env:TIINGO_API_KEY="your_key_here"
-```
-
-### 2. Install dependencies (one time only)
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Start the backend
-```bash
-python server.py
-```
-
-### 4. Open the app
-Visit **http://localhost:5000** in your browser. The backend serves the frontend directly, so there's no need to open `index.html` separately. Keep the terminal running in the background.
+That's it.
 
 ---
 
-## Features
+## What it gives you
 
-- **Live stock data** — Real-time price, daily change, 52-week high/low, volume, market cap
-- **Real financial statements** — Balance sheet and income statement pulled directly from Yahoo Finance
-- **Shariah screening** — 4-criteria compliance check with clear verdicts
-- **Multi-market support** — Bursa Malaysia (4-digit codes), US stocks (TSLA, NVDA, AAPL), and global exchanges
-- **Watchlist** — Save and track multiple stocks with persistent storage
-- **6-month price chart** — Canvas-based price history visualisation
-- **Buy / Hold / Avoid recommendations** — Based on fundamentals and risk level
-- **Broker guide** — Comparison of licensed brokers for placing actual trades
+- **Shariah verdict** — ✅ Potentially Halal · ◐ Doubtful · ✗ Not Halal
+- **Live stock data** — price, daily change, 52-week high/low, volume, market cap
+- **Financial screening** — Debt-to-Assets ratio and non-permissible income %, checked against AAOIFI and DJIM standards
+- **6-month price chart** — price history at a glance
+- **Buy / Hold / Avoid recommendation** — based on fundamentals and risk
+- **Watchlist** — save and track stocks you care about
+- **Broker guide** — a comparison of licensed brokers for placing actual trades
 
 ---
 
@@ -75,8 +41,6 @@ Visit **http://localhost:5000** in your browser. The backend serves the frontend
 | Non-permissible income | DJIM | < 5% of total revenue |
 | Gharar check | Fiqh principle | Loss-making companies flagged |
 
-**Verdicts:** ✅ Potentially Halal · ◐ Doubtful · ✗ Not Halal
-
 ---
 
 ## Supported Markets
@@ -87,7 +51,7 @@ Visit **http://localhost:5000** in your browser. The backend serves the frontend
 | US (NYSE / NASDAQ) | Ticker | `TSLA`, `NVDA`, `AAPL` |
 | London Stock Exchange | Ticker + `.L` | `HSBA.L` |
 | Hong Kong | Code + `.HK` | `9988.HK` |
-| Other Yahoo Finance markets | Ticker + suffix | `7203.T` (Toyota) |
+| Japan | Ticker + `.T` | `7203.T` (Toyota) |
 
 ---
 
@@ -109,6 +73,47 @@ This app is a research tool. To buy stocks, use a licensed broker:
 ## Disclaimer
 
 This software is for **educational and informational purposes only**. It is **not financial advice**. Shariah compliance is a scholarly matter — always verify against the [SC Malaysia official Shariah-compliant securities list](https://www.sc.com.my/development/islamic-capital-market/shariah-compliant-securities) and consult a qualified Islamic finance scholar before investing.
+
+---
+
+## 🛠️ For developers
+
+Want to run or modify it locally?
+
+### 1. Set your Tiingo API key
+The backend uses a free [Tiingo](https://api.tiingo.com) API key for US/global stock data.
+
+```bash
+# Linux / macOS
+export TIINGO_API_KEY="your_key_here"
+
+# Windows (PowerShell)
+$env:TIINGO_API_KEY="your_key_here"
+```
+
+### 2. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Start the backend
+```bash
+python server.py
+```
+
+### 4. Open the app
+Visit **http://localhost:5000** — the backend serves the frontend directly, so there's no separate build step.
+
+### Architecture
+
+```
+index.html  ←→  server.py  ←→  Tiingo API + Bursa DB
+(Browser UI)    (Python backend)  (Live data)
+```
+
+The Python backend handles all data fetching and Shariah screening logic. The frontend is a single HTML file that calls the backend over same-origin REST endpoints (`/screen`, `/purify`, `/health`) — no frameworks, no build step.
+
+**Tech Stack:** Python · JavaScript · REST API · Tiingo API (US/global data) · Bursa Malaysia database
 
 ---
 
