@@ -1205,7 +1205,8 @@ def fetch_bursa_stock(symbol: str) -> dict:
     live = fetch_bursa_live(code)
     is_live = live is not None
 
-    price      = live["price"]      if is_live else db.get("week52High", 0) * 0.85
+    price      = (live["price"] if is_live and live["price"] is not None
+                  else db.get("week52High", 0) * 0.85)
     prev_close = live["prevClose"]  if is_live else None
     change_pct = live["changePct"]  if is_live else 0
     week_hi    = live["week52High"] if is_live and live["week52High"] is not None else db.get("week52High")
