@@ -1083,11 +1083,84 @@ def fetch_us_stock(ticker: str) -> dict:
     }
 
 # ══════════════════════════════════════════════════════════
-#  BURSA STOCK FETCH (from hardcoded database)
+#  BURSA STOCK FETCH (live Yahoo quote + hardcoded financials)
 # ══════════════════════════════════════════════════════════
 
+BURSA_LIVE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0 Safari/537.36",
+}
+
+def fetch_bursa_live(code: str) -> dict | None:
+    """
+    Fetch a live Bursa Malaysia quote from Yahoo Finance's chart API.
+    Quotes are ~15 minutes delayed (Bursa has no free real-time feed).
+    Returns None on any failure so the caller can fall back to the DB.
+    """
+    if not code:
+        return None
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.KL"
+    params = {"range": "6mo", "interval": "1mo"}
+
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, params=params,
+                                headers=BURSA_LIVE_HEADERS, timeout=8)
+            if resp.status_code != 200:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            data = resp.json()
+            result = (data.get("chart", {}).get("result") or [None])[0]
+            if not result:
+                return None
+            meta = result.get("meta", {})
+            price  = safe_float(meta.get("regularMarketPrice"))
+            prev   = safe_float(meta.get("chartPreviousClose")
+                                or meta.get("previousClose"))
+            change_pct = (((price - prev) / prev * 100)
+                          if price and prev else None)
+            volume = safe_int(meta.get("regularMarketVolume"))
+            wk_hi  = safe_float(meta.get("fiftyTwoWeekHigh"))
+            wk_lo  = safe_float(meta.get("fiftyTwoWeekLow"))
+
+            history = []
+            ts   = result.get("timestamp") or []
+            q    = (result.get("indicators", {}).get("quote") or [{}])[0]
+            closes = q.get("close") or []
+            if ts and closes:
+                from datetime import datetime, timezone
+                for t, cl in zip(ts, closes):
+                    if cl is None:
+                        continue
+                    dt = datetime.fromtimestamp(t, tz=timezone.utc)
+                    history.append({
+                        "date":   dt.strftime("%Y-%m"),
+                        "close":  round(cl, 3),
+                        "open":   round(cl, 3),
+                        "high":   round(cl, 3),
+                        "low":    round(cl, 3),
+                        "volume": 0,
+                    })
+
+            return {
+                "price":      round(price, 4)  if price is not None else None,
+                "prevClose":  round(prev, 4)   if prev  is not None else None,
+                "changePct":  round(change_pct, 3) if change_pct is not None else 0,
+                "week52High": round(wk_hi, 4)  if wk_hi is not None else None,
+                "week52Low":  round(wk_lo, 4)  if wk_lo is not None else None,
+                "volume":     volume,
+                "history":    history,
+            }
+        except Exception as e:
+            print(f"  Bursa live fetch failed (attempt {attempt+1}): {e}")
+            time.sleep(0.5 * (attempt + 1))
+
+    return None
+
+
 def fetch_bursa_stock(symbol: str) -> dict:
-    """Fetch Bursa Malaysia stock from hardcoded database."""
+    """Fetch Bursa Malaysia stock from hardcoded database + live Yahoo price."""
     db = bursa_lookup(symbol)
     code = get_bursa_code(symbol)
 
@@ -1128,17 +1201,18 @@ def fetch_bursa_stock(symbol: str) -> dict:
         sc_check=sc_check,
     )
 
-    # Build mock history from week52 range
-    history = []
-    if db.get("week52High") and db.get("week52Low"):
-        import random
-        lo, hi = db["week52Low"], db["week52High"]
-        rng = hi - lo
-        months = ["Jan","Feb","Mar","Apr","May","Jun"]
-        for i, m in enumerate(months):
-            close = round(lo + rng * (0.3 + 0.5 * i/5 + random.uniform(-0.1,0.1)), 3)
-            history.append({"date": f"2024-{m}", "close": close,
-                           "open": close, "high": close*1.02, "low": close*0.98, "volume": 0})
+    # Live price overlay (Yahoo Finance, ~15 min delayed) — fall back to DB
+    live = fetch_bursa_live(code)
+    is_live = live is not None
+
+    price      = live["price"]      if is_live else db.get("week52High", 0) * 0.85
+    prev_close = live["prevClose"]  if is_live else None
+    change_pct = live["changePct"]  if is_live else 0
+    week_hi    = live["week52High"] if is_live and live["week52High"] is not None else db.get("week52High")
+    week_lo    = live["week52Low"]  if is_live and live["week52Low"]  is not None else db.get("week52Low")
+    volume     = live["volume"]     if is_live else None
+
+    history = live["history"] if is_live and live["history"] else []
 
     return {
         "ticker":      code or symbol,
@@ -1148,12 +1222,12 @@ def fetch_bursa_stock(symbol: str) -> dict:
         "description": db.get("description",""),
         "exchange":    "KLSE",
         "currency":    "MYR",
-        "price":       db.get("week52High", 0) * 0.85,  # approximate mid-range
-        "prevClose":   None,
-        "changePct":   0,
-        "week52High":  db.get("week52High"),
-        "week52Low":   db.get("week52Low"),
-        "volume":      None,
+        "price":       price,
+        "prevClose":   prev_close,
+        "changePct":   change_pct,
+        "week52High":  week_hi,
+        "week52Low":   week_lo,
+        "volume":      volume,
         "avgVolume":   None,
         "marketCap":   db.get("marketCap"),
         "beta":        None,
@@ -1179,8 +1253,13 @@ def fetch_bursa_stock(symbol: str) -> dict:
         "screening":  screening,
         "fetchedAt":  time.strftime("%H:%M:%S"),
         "_cached":    False,
-        "_source":    "Bursa Malaysia Database (Annual Report Data)",
-        "_dataNote":  "Price data is approximate. Financials are from FY2023/2024 annual reports.",
+        "_source":    ("Yahoo Finance (live, ~15 min delayed) + Bursa DB financials"
+                       if is_live else "Bursa Malaysia Database (Annual Report Data)"),
+        "_dataNote":  ("Price/change/volume/chart are live (15-min delayed). "
+                       "Financials are from FY2023/2024 annual reports."
+                       if is_live else
+                       "Live quote unavailable — price is approximate. "
+                       "Financials are from FY2023/2024 annual reports."),
     }
 
 # ══════════════════════════════════════════════════════════

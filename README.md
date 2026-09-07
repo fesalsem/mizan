@@ -53,6 +53,8 @@ That's it.
 | Hong Kong | Code + `.HK` | `9988.HK` |
 | Japan | Ticker + `.T` | `7203.T` (Toyota) |
 
+> **Data sources:** US/global prices come from the Tiingo API. Bursa Malaysia prices, volume and charts come live from Yahoo Finance (~15 min delayed — Bursa has no free real-time feed). Bursa financials (debt ratio, P/E, ROE, revenue) come from FY2023/2024 annual reports and drive the Shariah screening.
+
 ---
 
 ## Brokers (to place actual trades)
@@ -107,13 +109,13 @@ Visit **http://localhost:5000** — the backend serves the frontend directly, so
 ### Architecture
 
 ```
-index.html  ←→  server.py  ←→  Tiingo API + Bursa DB
-(Browser UI)    (Python backend)  (Live data)
+index.html  ←→  server.py  ←→  Tiingo API (US) + Yahoo Finance (Bursa) + Bursa DB
+(Browser UI)    (Python backend)  (Live prices + annual-report financials)
 ```
 
 The Python backend handles all data fetching and Shariah screening logic. The frontend is a single HTML file that calls the backend over same-origin REST endpoints (`/screen`, `/purify`, `/health`) — no frameworks, no build step.
 
-**Tech Stack:** Python · JavaScript · REST API · Tiingo API (US/global data) · Bursa Malaysia database
+**Tech Stack:** Python · JavaScript · REST API · Tiingo API (US/global) · Yahoo Finance (Bursa live prices) · Bursa Malaysia database (financials)
 
 ---
 
