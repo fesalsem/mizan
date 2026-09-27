@@ -1,0 +1,17 @@
+# Local run:  docker compose up --build
+# Then open:  http://localhost:8000
+#
+# Put TIINGO_API_KEY in a .env file next to this file. It is already gitignored.
+# The :? syntax makes compose stop with a clear message if the key is missing,
+# rather than starting a container that exits on import.
+
+services:
+  mizan:
+    build: .
+    image: mizan:local
+    ports:
+      - "8000:8000"
+    environment:
+      TIINGO_API_KEY: "${TIINGO_API_KEY:?set TIINGO_API_KEY in a .env file beside this compose file}"
+      PORT: "8000"
+    restart: unless-stopped

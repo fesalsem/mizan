@@ -1,0 +1,25 @@
+# Never copy secrets or local state into the image.
+.env
+.env.*
+
+.git/
+.gitignore
+.github/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+watchlist.json
+*.log
+
+README.md
+LICENSE.txt
+render.yaml
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

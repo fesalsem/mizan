@@ -106,6 +106,26 @@ python server.py
 ### 4. Open the app
 Visit **http://localhost:5000** — the backend serves the frontend directly, so there's no separate build step.
 
+### Or run with Docker
+
+No Python setup needed, and it pins the exact interpreter version.
+
+```bash
+# put TIINGO_API_KEY in a .env file beside docker-compose.yml
+docker compose up --build
+```
+
+Visit **http://localhost:8000** (8000, not 5000, so it does not clash with a `python server.py` already running).
+
+Stop with `Ctrl+C`. `docker compose down` removes the container.
+
+Notes on the image:
+
+- Multi-stage is not needed here. The dependency set is three packages, so the image stays small.
+- The container runs as a non-root user and the app writes nothing to disk, so there is no volume to mount.
+- The build fails fast on a missing key by design: `server.py` calls `check_setup()` at import time and exits if `TIINGO_API_KEY` is unset. Compose also checks for it before starting.
+- The health check polls `/health`, which returns 200 unconditionally. It deliberately does not use `/screen`, since that endpoint requires a `symbol` parameter and answers 400 without one.
+
 ### Architecture
 
 ```
