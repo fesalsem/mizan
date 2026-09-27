@@ -27,7 +27,10 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["python", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8000')+'/health',timeout=4)"]
 
-# Shell form so ${PORT} expands. Render injects PORT; locally it falls back to 8000.
+# Exec form wrapping sh -c, so ${PORT} still expands but exec replaces the shell.
+# That makes gunicorn PID 1, so SIGTERM from "docker stop" reaches it directly
+# instead of being swallowed by the shell.
+# Render injects PORT; locally it falls back to 8000.
 # Note: server.py calls check_setup() at import time, so the container exits
 # immediately if TIINGO_API_KEY is not set.
-CMD gunicorn server:app --bind 0.0.0.0:${PORT:-8000} --workers 2 --threads 2 --timeout 60
+CMD ["sh", "-c", "exec gunicorn server:app --bind 0.0.0.0:${PORT:-8000} --workers 2 --threads 2 --timeout 60"]
