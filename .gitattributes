@@ -1,0 +1,15 @@
+# Keep line endings as LF in the working copy, not just in the repo.
+# This machine has core.autocrlf enabled, which would otherwise check these
+# files out with CRLF. A CRLF inside a Dockerfile or a shell script breaks
+# the Linux container build with errors that are hard to trace.
+* text=auto eol=lf
+
+# Binary assets are left alone.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
