@@ -1,0 +1,36 @@
+# Mizan on AWS Lambda.
+#
+# This is a second Dockerfile. The other one (Dockerfile) is unchanged and
+# still serves Render and local docker compose. They differ because Lambda
+# needs a base image that contains the Runtime Interface Client, and because
+# a Lambda function cannot act as its own reverse proxy.
+#
+# How this works: the AWS Lambda Web Adapter is an extension that runs a
+# normal web server as a child process and forwards Lambda invocations to it
+# over localhost. gunicorn therefore runs unmodified, exactly as it does in
+# the other image. No application code changes.
+
+FROM public.ecr.aws/lambda/python:3.11
+
+# The adapter, dropped in as a Lambda extension.
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 \
+     /lambda-adapter /opt/extensions/lambda-adapter
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AWS_LAMBDA_EXEC_WRAPPER=/opt/bootstrap \
+    PORT=8080
+
+WORKDIR ${LAMBDA_TASK_ROOT}
+
+# Dependencies first, so editing server.py does not invalidate this layer.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY server.py index.html ./
+
+# One worker with threads, not two workers: Lambda scales by running more
+# functions, not by adding workers inside one, so extra workers only consume
+# memory. The 25 second gunicorn timeout sits under the function's 30 second
+# limit so gunicorn reports the failure rather than being killed mid-response.
+CMD ["gunicorn", "server:app", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "25"]
