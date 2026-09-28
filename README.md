@@ -4,9 +4,13 @@
 
 ## 🚀 Try it now
 
-**https://mizan-eft5.onrender.com**
+**AWS:** https://quai45qkwxlb5n6bodajvt3snm0tmgfe.lambda-url.ap-southeast-1.on.aws
 
-No install, no setup — just open the link and search. Enter a 4-digit Bursa Malaysia code (e.g. `1295`, `1155`) or a US ticker (e.g. `TSLA`, `AAPL`).
+**Render:** https://mizan-eft5.onrender.com
+
+No install, no setup — just open either link and search. Enter a 4-digit Bursa Malaysia code (e.g. `1295`, `1155`) or a US ticker (e.g. `TSLA`, `AAPL`).
+
+Both run the same container image. The AWS link is a Lambda function behind a public Function URL, so the first request after an idle period may take a second or two while the container starts.
 
 ---
 
@@ -36,6 +40,7 @@ That's it.
 
 | Criterion | Standard | Threshold |
 |-----------|----------|-----------|
+| SC Malaysia official list | Securities Commission Malaysia | Company must appear on the published Shariah-compliant securities list |
 | Business activity | AAOIFI / DJIM | Categorical ban: alcohol, gambling, riba banking, tobacco, weapons, pork |
 | Debt-to-Assets ratio | AAOIFI SS-21 | < 33% of total assets |
 | Non-permissible income | DJIM | < 5% of total revenue |
@@ -49,11 +54,12 @@ That's it.
 |--------|--------|---------|
 | Bursa Malaysia | 4-digit code | `1295`, `1155`, `5347` |
 | US (NYSE / NASDAQ) | Ticker | `TSLA`, `NVDA`, `AAPL` |
-| London Stock Exchange | Ticker + `.L` | `HSBA.L` |
-| Hong Kong | Code + `.HK` | `9988.HK` |
-| Japan | Ticker + `.T` | `7203.T` (Toyota) |
 
-> **Data sources:** US/global prices come from the Tiingo API. Bursa Malaysia prices, volume and charts come live from Yahoo Finance (~15 min delayed — Bursa has no free real-time feed). Bursa financials (debt ratio, P/E, ROE, revenue) come from FY2023/2024 annual reports and drive the Shariah screening.
+Screening figures are held for 31 Bursa Malaysia companies and 19 US companies. Any other US ticker the Tiingo free tier carries is fetched live, though without the annual-report figures that drive the verdict.
+
+Other exchanges are **not** supported. London (`HSBA.L`), Hong Kong (`9988.HK`) and Japan (`7203.T`) each return a "ticker not found" error, because the only upstream source queried for non-Bursa symbols is Tiingo, which does not carry them.
+
+> **Data sources:** US prices come from the Tiingo API. Bursa Malaysia prices, volume and charts come live from Yahoo Finance (~15 min delayed — Bursa has no free real-time feed). Bursa financials (debt ratio, P/E, ROE, revenue) come from FY2023/2024 annual reports and drive the Shariah screening.
 
 ---
 
@@ -129,13 +135,36 @@ Notes on the image:
 ### Architecture
 
 ```
-index.html  ←→  server.py  ←→  Tiingo API (US) + Yahoo Finance (Bursa) + Bursa DB
-(Browser UI)    (Python backend)  (Live prices + annual-report financials)
+index.html  ←→  Flask + Gunicorn  ←→  Tiingo API (US prices + fundamentals)
+(Browser UI)    (screening engine)     Yahoo Finance (Bursa live prices)
+                                       Annual report figures (31 Bursa, 19 US)
 ```
 
 The Python backend handles all data fetching and Shariah screening logic. The frontend is a single HTML file that calls the backend over same-origin REST endpoints (`/screen`, `/purify`, `/health`) — no frameworks, no build step.
 
-**Tech Stack:** Python · JavaScript · REST API · Tiingo API (US/global) · Yahoo Finance (Bursa live prices) · Bursa Malaysia database (financials)
+**Tech Stack:** Python · JavaScript · REST API · Tiingo API (US) · Yahoo Finance (Bursa live prices) · annual report database (financials) · Docker · AWS Lambda · Amazon ECR · CloudWatch
+
+### Deployment
+
+The same application runs on two hosts.
+
+| Host | How it is built | Notes |
+|------|-----------------|-------|
+| AWS Lambda | container image pushed to Amazon ECR, behind a public Function URL | no server to manage; scales to zero when idle |
+| Render | Docker deploy from the repository | always warm, so no cold start |
+
+`Dockerfile.lambda` is the AWS build. Three differences from the local `Dockerfile`, each commented in the file: it starts from the AWS managed Python base image, it copies the Lambda Web Adapter in as an extension, and it overrides the base image `ENTRYPOINT` so Gunicorn starts directly.
+
+Measured on the deployed function: warm requests return in 55 to 94 ms, cold starts take 1.75 to 1.79 seconds.
+
+To redeploy after a code change:
+
+```bash
+cd deploy/aws
+./deploy.sh          # builds, pushes to ECR, updates the function
+```
+
+Full runbook, including the two IAM permissions a public Function URL needs and the image media-type pitfall that blocks a first deploy: **[docs/aws-deployment.md](docs/aws-deployment.md)**.
 
 ---
 
