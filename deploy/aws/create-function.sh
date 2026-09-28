@@ -104,10 +104,19 @@ done
 
 echo "Lambda function ${FUNCTION_NAME}..."
 if aws lambda get-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "  exists, updating image instead"
+  # Re-running this script is how a rotated API key gets applied, so the
+  # environment is updated here too. Updating only the code would leave the
+  # previous key in place and the screening endpoint returning 403, which is a
+  # confusing way to discover that this branch did nothing.
+  echo "  exists, updating image and environment"
   aws lambda update-function-code \
     --function-name "${FUNCTION_NAME}" \
     --image-uri "${IMAGE_URI}" \
+    --region "${REGION}" >/dev/null
+  aws lambda wait function-updated --function-name "${FUNCTION_NAME}" --region "${REGION}"
+  aws lambda update-function-configuration \
+    --function-name "${FUNCTION_NAME}" \
+    --environment "Variables={TIINGO_API_KEY=${TIINGO_API_KEY},PORT=8080}" \
     --region "${REGION}" >/dev/null
 else
   aws lambda create-function \
