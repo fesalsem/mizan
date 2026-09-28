@@ -32,12 +32,29 @@ TIMEOUT_S="${TIMEOUT_S:-30}"
 ARCH="${ARCH:-x86_64}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../../.env"
 
-if [[ -z "${TIINGO_API_KEY:-}" ]]; then
-  echo "TIINGO_API_KEY is not set." >&2
-  echo "Usage: TIINGO_API_KEY=xxx $0" >&2
-  exit 1
+# Prefer the environment, but fall back to the repo's .env, which is where the
+# key already lives for docker compose and which is gitignored. The point is to
+# avoid the key being pasted into a shell history or a chat log.
+if [[ -z "${TIINGO_API_KEY:-}" && -f "${ENV_FILE}" ]]; then
+  TIINGO_API_KEY="$(grep -E '^TIINGO_API_KEY=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '"'"'"' \r')"
+  export TIINGO_API_KEY
 fi
+
+case "${TIINGO_API_KEY:-}" in
+  "")
+    echo "TIINGO_API_KEY is not set." >&2
+    echo "Either export it, or put a real key in ${ENV_FILE}." >&2
+    echo "Usage: TIINGO_API_KEY=xxx $0" >&2
+    exit 1
+    ;;
+  *placeholder*|*replace*|*your_*|*xxx*)
+    echo "TIINGO_API_KEY still looks like the placeholder in ${ENV_FILE}." >&2
+    echo "Put the real key there, or export a real one." >&2
+    exit 1
+    ;;
+esac
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}:${IMAGE_TAG}"
@@ -119,14 +136,28 @@ else
     --auth-type NONE \
     --region "${REGION}" >/dev/null
 
-  # A public Function URL needs a resource policy that allows anonymous invoke.
-  # Without this the URL exists but returns 403.
+  # A public Function URL needs TWO permissions, not one. Granting only
+  # lambda:InvokeFunctionUrl leaves the URL returning 403 Forbidden on every
+  # request, which looks like a bug in the function rather than in the policy.
+  #
+  # Note the flags differ. --function-url-auth-type is rejected on
+  # InvokeFunction with "FunctionUrlAuthType is only supported for
+  # lambda:InvokeFunctionUrl action"; that action takes
+  # --invoked-via-function-url instead.
   aws lambda add-permission \
     --function-name "${FUNCTION_NAME}" \
     --statement-id FunctionURLAllowPublicAccess \
     --action lambda:InvokeFunctionUrl \
     --principal "*" \
     --function-url-auth-type NONE \
+    --region "${REGION}" >/dev/null
+
+  aws lambda add-permission \
+    --function-name "${FUNCTION_NAME}" \
+    --statement-id FunctionURLAllowInvokeAction \
+    --action lambda:InvokeFunction \
+    --principal "*" \
+    --invoked-via-function-url \
     --region "${REGION}" >/dev/null
 fi
 

@@ -1,7 +1,7 @@
 # Mizan on AWS Lambda: deployment design
 
 Date: 2026-09-28
-Status: approved, pending implementation
+Status: implemented and deployed; blocked on verification criterion 3
 
 ## Goal
 
@@ -24,11 +24,10 @@ deployed system rather than a course completion.
 - The app is stateless. It writes nothing to disk and has no database, so it
   needs no persistent volume or network filesystem.
 - Runtime dependencies are `flask`, `requests`, `gunicorn` only.
-- The AWS account (676206919472) was created 2025-01-16 and never finished
-  activation. IAM and ECR answer; every other service returns
-  `SubscriptionRequiredException` or `OptInRequired`. Lambda cannot be used
-  until a payment method is added and activation completes. This is a
-  prerequisite, not part of the build.
+- The AWS account (676206919472) was created 2025-01-16 and had never finished
+  activation. IAM and ECR answered; every other service returned
+  `SubscriptionRequiredException` or `OptInRequired`. A payment method was
+  added on 2026-09-28 and the account activated. No further action needed.
 - Because the account predates 2025-07-15 it is not on the credit model, and
   its 12-month EC2 free window closed in January 2026. That does not matter
   here: Lambda, the Function URL, S3 and 5 GB of CloudWatch Logs are always
@@ -67,13 +66,21 @@ restore egress, which costs about $32/month.
 A second Dockerfile. The existing `Dockerfile` is untouched and continues to
 serve Render and `docker compose` locally.
 
-- Base image `public.ecr.aws/lambda/python:3.11`, which already contains the
-  Lambda Runtime Interface Client.
+- Base image `public.ecr.aws/lambda/python:3.11`.
 - Lambda Web Adapter copied in from
-  `public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4` as an extension.
-- `AWS_LAMBDA_EXEC_WRAPPER=/opt/bootstrap` so the adapter wraps the process.
+  `public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4` as an extension. The
+  adapter is itself the Runtime Interface Client, so no exec wrapper is needed.
+- `ENTRYPOINT` set to the gunicorn command. This is required rather than
+  stylistic: the managed base image's own `ENTRYPOINT` is
+  `/lambda-entrypoint.sh`, which requires exactly one argument and exits 142
+  otherwise. The original design used `CMD` plus
+  `AWS_LAMBDA_EXEC_WRAPPER=/opt/bootstrap`; that variable belongs to the Zip
+  packaging flow, `/opt/bootstrap` does not exist in the adapter image, and the
+  combination failed twice for two different reasons.
 - The app listens on port 8080, which is the adapter's default. `server.py`
   already reads `PORT` from the environment, so this is configuration only.
+- The image must be built and pushed with `--provenance=false --sbom=false`.
+  Otherwise buildx wraps it in an OCI image index and Lambda rejects it.
 
 ### `deploy/aws/deploy.sh` (new)
 
@@ -134,13 +141,27 @@ so such a rule would delete it and break the tag.
 
 Nothing is claimed on the resume until all of these pass.
 
-1. `curl <function-url>/health` returns `"ok":true`
-2. `curl <function-url>/` returns the Mizan HTML page
-3. A real screening call for a known symbol returns correct figures
-4. Response time on a warm invocation is under 1 second
-5. Cold start is under 3 seconds
-6. The AWS console shows the function as the deployed image digest
-7. `aws ce get-cost-and-usage` for the current month shows no charge
+Deployed to `https://quai45qkwxlb5n6bodajvt3snm0tmgfe.lambda-url.ap-southeast-1.on.aws/`
+on 2026-09-28.
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | `curl <url>/health` returns `"ok":true` | **Pass**, 200 |
+| 2 | `curl <url>/` returns the Mizan HTML page | **Pass**, 69,075 bytes, correct title |
+| 3 | A real screening call returns correct figures | **Blocked**: needs the real `TIINGO_API_KEY`. Currently returns `Tiingo API error 403` |
+| 4 | Warm invocation under 1 second | **Pass**, 61 to 78 ms over five calls |
+| 5 | Cold start under 3 seconds | **Pass**, 1.75 s |
+| 6 | Console shows the deployed image digest | **Pass**, `sha256:37f89cf5` |
+| 7 | Cost for the current month is zero | **Not yet measurable**: Cost Explorer is not enabled on this account. Check in the Billing console instead |
+
+Criterion 3 is the one that matters most and it is the one outstanding. A 403
+from Tiingo means the placeholder key is in place. Until it is replaced, the
+screening endpoint is not proven and the resume stays unchanged.
+
+Criterion 7 cannot be satisfied by the command the original design named,
+because that API requires activating Cost Explorer first. This is a limitation
+of the check, not evidence of a charge. The budget alert is the practical
+substitute and still needs an email address, which the account has not set.
 
 ## Risks
 

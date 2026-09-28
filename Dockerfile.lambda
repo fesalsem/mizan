@@ -1,14 +1,30 @@
 # Mizan on AWS Lambda.
 #
 # This is a second Dockerfile. The other one (Dockerfile) is unchanged and
-# still serves Render and local docker compose. They differ because Lambda
-# needs a base image that contains the Runtime Interface Client, and because
-# a Lambda function cannot act as its own reverse proxy.
+# still serves Render and local docker compose.
 #
-# How this works: the AWS Lambda Web Adapter is an extension that runs a
-# normal web server as a child process and forwards Lambda invocations to it
-# over localhost. gunicorn therefore runs unmodified, exactly as it does in
-# the other image. No application code changes.
+# How this works: the Lambda Web Adapter runs as a Lambda extension and acts as
+# the Runtime Interface Client, forwarding each invocation to a normal web
+# server over localhost. gunicorn therefore runs unmodified, exactly as it does
+# in the other image. No application code changes.
+#
+# Three things here are load-bearing and were each wrong once:
+#
+# 1. ENTRYPOINT, not CMD. AWS managed base images ship an ENTRYPOINT of
+#    /lambda-entrypoint.sh which requires exactly one argument and then starts
+#    the Python runtime. A multi-argument CMD makes it exit 142 with
+#    "entrypoint requires the handler name to be the first argument". The
+#    adapter replaces the runtime, so that entrypoint must be overridden.
+#
+# 2. No AWS_LAMBDA_EXEC_WRAPPER. That variable and its /opt/bootstrap path
+#    belong to the Zip packaging flow. The adapter image contains only
+#    /lambda-adapter, so /opt/bootstrap does not exist and setting it makes the
+#    runtime exit 127. The adapter supplies the Runtime Interface Client itself.
+#
+# 3. The image is pushed with --provenance=false --sbom=false. Docker's default
+#    buildx output wraps the image in an OCI index, and Lambda rejects an index
+#    with "the image manifest, config or layer media type is not supported".
+#    deploy.sh passes those flags.
 
 FROM public.ecr.aws/lambda/python:3.11
 
@@ -18,7 +34,6 @@ COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 \
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    AWS_LAMBDA_EXEC_WRAPPER=/opt/bootstrap \
     PORT=8080
 
 WORKDIR ${LAMBDA_TASK_ROOT}
@@ -33,4 +48,4 @@ COPY server.py index.html ./
 # functions, not by adding workers inside one, so extra workers only consume
 # memory. The 25 second gunicorn timeout sits under the function's 30 second
 # limit so gunicorn reports the failure rather than being killed mid-response.
-CMD ["gunicorn", "server:app", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "25"]
+ENTRYPOINT ["gunicorn", "server:app", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "25"]

@@ -53,12 +53,16 @@ written to the repo.
 
 ```bash
 cd deploy/aws
-TIINGO_API_KEY=your_real_key_here ./deploy.sh
+./deploy.sh
 TIINGO_API_KEY=your_real_key_here ./create-function.sh
 ```
 
 Order matters: `create-function.sh` points the function at an image that must
-already be in ECR.
+already be in ECR. Only `create-function.sh` needs the key; `deploy.sh` builds
+and pushes and never reads it.
+
+`create-function.sh` will also read the key from the repo's `.env` if it is not
+in the environment, which is the easier route and keeps it out of shell history.
 
 If `create-function.sh` reports that the account cannot use Lambda, the account
 is not fully activated. See Troubleshooting.
@@ -108,6 +112,9 @@ Drop `--follow` for a one-off look at recent output. A cold start logs a
 
 ## Checking the bill
 
+The Billing console is the reliable place to look. The API route needs
+activating first:
+
 ```bash
 aws ce get-cost-and-usage \
   --time-period Start=$(date -u +%Y-%m-01),End=$(date -u +%Y-%m-%d) \
@@ -115,10 +122,16 @@ aws ce get-cost-and-usage \
   --metrics UnblendedCost
 ```
 
+This fails with `User not enabled for cost explorer access` until Cost Explorer
+is turned on in the Billing console, which takes up to 24 hours and costs $0.01
+per API request thereafter. Do not treat that error as a sign of a problem with
+the deployment.
+
 Expected: `0`. Lambda, the Function URL, S3, DynamoDB, SQS and 5 GB of
 CloudWatch Logs are in AWS's always-free tier for every account, regardless of
-plan or account age. ECR allows 500 MB of private storage; the image is about
-211 MB, so it sits under that. Nothing here bills by the hour.
+plan or account age. ECR allows 500 MB of private storage and the image uses
+237 MB of unique layers, so there is room for roughly one more image. Nothing
+here bills by the hour.
 
 ## Tearing it down
 
@@ -150,9 +163,35 @@ built for arm64 and the function is x86_64, or the reverse. `deploy.sh` passes
 to start without it, which is deliberate: failing at deploy time is easier to
 debug than failing on the first screening request.
 
-**403 from the Function URL.** The resource policy is missing. `auth-type NONE`
-is not sufficient on its own; the URL also needs `FunctionURLAllowPublicAccess`
-allowing `lambda:InvokeFunctionUrl`. `create-function.sh` adds it.
+**403 from the Function URL.** A public URL needs **two** resource policy
+statements, and `auth-type NONE` alone grants neither. One allows
+`lambda:InvokeFunctionUrl` with `FunctionUrlAuthType NONE`; the other allows
+`lambda:InvokeFunction` with `InvokedViaFunctionUrl true`. With only the first,
+every request returns 403. `create-function.sh` adds both.
+
+The flags differ between the two, which is easy to get wrong:
+`--function-url-auth-type` is rejected on `InvokeFunction` with "FunctionUrlAuthType
+is only supported for lambda:InvokeFunctionUrl action". Use
+`--invoked-via-function-url` there instead.
+
+**Every invocation fails with `entrypoint requires the handler name to be the
+first argument`, exit 142.** The container still has the AWS base image's
+`ENTRYPOINT`, `/lambda-entrypoint.sh`, which requires exactly one argument. A
+multi-argument `CMD` fails that check before the app starts. With a managed AWS
+base image the adapter needs the `ENTRYPOINT` overridden to the web server
+command, which is what `Dockerfile.lambda` does.
+
+**The runtime exits 127 with `/opt/bootstrap: does not exist`.** That variable
+belongs to the Zip packaging flow, not Docker. The adapter image ships only
+`/lambda-adapter`, so `/opt/bootstrap` never exists. The adapter is itself the
+Runtime Interface Client; no exec wrapper is needed for a container image.
+
+**`create-function` fails with "The image manifest, config or layer media type
+for the source image is not supported".** The tag points at an OCI image index.
+Docker's buildx adds provenance and SBOM attestations by default, which wraps
+the real manifest in an index, and Lambda accepts a manifest but not an index.
+`deploy.sh` passes `--provenance=false --sbom=false` and then reads the media
+type back and refuses to finish if it sees an index.
 
 **Timeout on the first request after a quiet period.** A cold start. The image
 is about 211 MB, so expect one to two seconds. Warm invocations are well under
