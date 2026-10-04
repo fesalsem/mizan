@@ -620,6 +620,10 @@ def is_financial(sector: str, industry: str) -> bool:
     s = f"{sector} {industry}".lower()
     return any(k in s for k in FINANCIAL_SECTORS)
 
+# Not an allowlist. normalise_ticker already accepts any alphabetic symbol up
+# to five characters, which covers every entry but one, so adding or removing
+# an entry here changes nothing. BRK-B is the exception: the hyphen fails the
+# alphabetic test, so it is the only entry that is actually load-bearing.
 US_KNOWN = {
     "AAPL","MSFT","GOOGL","GOOG","AMZN","TSLA","NVDA","META","NFLX","AMD",
     "INTC","QCOM","AVGO","TXN","MU","AMAT","JPM","BAC","GS","MS","WFC",
@@ -1041,7 +1045,7 @@ def fetch_us_stock(ticker: str) -> dict:
             return fetch_us_db_stock(ticker)
         raise ValueError(
             f"Ticker '{ticker}' not found. "
-            "US examples: AAPL, MSFT, TSLA, NVDA, GOOGL, AMZN. "
+            "US examples: TSLA, NVDA, GOOGL, AMZN, META. "
             "Bursa examples: 1295, 1155, 5347."
         )
 

@@ -8,7 +8,7 @@
 
 **Render:** https://mizan-eft5.onrender.com
 
-No install, no setup — just open either link and search. Enter a 4-digit Bursa Malaysia code (e.g. `1295`, `1155`) or a US ticker (e.g. `TSLA`, `AAPL`).
+No install, no setup — just open either link and search. Enter a 4-digit Bursa Malaysia code (e.g. `1295`, `1155`) or a US ticker (e.g. `TSLA`, `NVDA`).
 
 Both run the same container image. The AWS link is a Lambda function behind a public Function URL, so the first request after an idle period may take a second or two while the container starts.
 
@@ -86,9 +86,13 @@ list is authoritative, it is not overridden by the activity heuristics.
 | Market | Format | Example |
 |--------|--------|---------|
 | Bursa Malaysia | 4-digit code | `1295`, `1155`, `5347` |
-| US (NYSE / NASDAQ) | Ticker | `TSLA`, `NVDA`, `AAPL` |
+| US (NYSE / NASDAQ) | Ticker | `TSLA`, `NVDA`, `META` |
 
 Screening figures are held for 31 Bursa Malaysia companies and 19 US companies. Any other US ticker the Tiingo free tier carries is fetched live, though without the annual-report figures that drive the verdict.
+
+The US tickers with figures are `NVDA`, `TSLA`, `GOOGL`, `GOOG`, `AMZN`, `META`, `AMD`, `AVGO`, `NFLX`, `JPM`, `BAC`, `XOM`, `WMT`, `V`, `MA`, `JNJ`, `NKE`, `BABA` and `COIN`. A ticker outside this list still returns a price and a chart, but its verdict will read `Doubtful` with `dataQuality: partial`, because the debt ratio and non-permissible income figure the verdict depends on are not held for it and the free tier does not supply them. That is the app telling you it could not verify the company, not a judgement on the company.
+
+Because of this, the examples throughout this file are drawn from the list above.
 
 Other exchanges are **not** supported. London (`HSBA.L`), Hong Kong (`9988.HK`) and Japan (`7203.T`) each return a "ticker not found" error, because the only upstream source queried for non-Bursa symbols is Tiingo, which does not carry them.
 
