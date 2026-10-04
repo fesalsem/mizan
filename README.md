@@ -29,6 +29,7 @@ That's it.
 - **Shariah verdict** — ✅ Potentially Halal · ◐ Doubtful · ✗ Not Halal
 - **Live stock data** — price, daily change, 52-week high/low, volume, market cap
 - **Financial screening** — Debt-to-Assets ratio and non-permissible income %, checked against AAOIFI and DJIM standards
+- **Data-quality flag** — tells you when a figure the verdict depends on could not be retrieved, instead of quietly scoring it as clean
 - **6-month price chart** — price history at a glance
 - **Buy / Hold / Avoid recommendation** — based on fundamentals and risk
 - **Watchlist** — save and track stocks you care about
@@ -41,10 +42,42 @@ That's it.
 | Criterion | Standard | Threshold |
 |-----------|----------|-----------|
 | SC Malaysia official list | Securities Commission Malaysia | Company must appear on the published Shariah-compliant securities list |
-| Business activity | AAOIFI / DJIM | Categorical ban: alcohol, gambling, riba banking, tobacco, weapons, pork |
+| Business activity | AAOIFI / DJIM | Categorical ban: alcohol, gambling, riba banking, conventional insurance, tobacco, weapons, pork, adult entertainment |
 | Debt-to-Assets ratio | AAOIFI SS-21 | < 33% of total assets |
 | Non-permissible income | DJIM | < 5% of total revenue |
 | Gharar check | Fiqh principle | Loss-making companies flagged |
+
+### How a verdict is reached
+
+Each screen returns three states per check, not two. A check is `pass`, `warn`,
+`fail`, or `n/a` when the figure it needs is something the company does not
+report.
+
+- **Potentially Halal** means no check failed.
+- **Not Halal** means a check failed. A failed business-activity check on its
+  own is enough, because the prohibition there is categorical rather than a
+  threshold.
+- **Doubtful** means nothing failed but something could not be confirmed.
+
+Two consequences worth knowing:
+
+- **Unverified is not the same as clean.** A company whose debt ratio could not
+  be retrieved scores worse than one with a low debt ratio, not better. The
+  response lists the missing inputs under `missingInputs` and sets
+  `dataQuality` to `partial`, and the app shows a note under the verdict. UIs
+  should treat `partial` as "look this up yourself", not as a pass.
+- **The business-activity scan reads the sector, the industry and the company
+  name, never the free-text description.** Scanning prose produced false
+  prohibitions: a retailer whose blurb mentioned that some stores sell alcohol
+  was reported as failing on business activity. Two US banks carry an explicit
+  `conventional_banking` flag in the database instead, so they fail on the
+  actual reason rather than on a substring.
+
+Banks and other financial firms get an `n/a` on the non-permissible-income
+check, not a warning. They do not report that figure in a form the upstream
+source carries, and warning them for it put "Doubtful" directly beneath a check
+reading "Listed as Shariah-compliant by SC Malaysia". Where the SC Malaysia
+list is authoritative, it is not overridden by the activity heuristics.
 
 ---
 
@@ -131,6 +164,47 @@ Notes on the image:
 - The container runs as a non-root user and the app writes nothing to disk, so there is no volume to mount.
 - The build fails fast on a missing key by design: `server.py` calls `check_setup()` at import time and exits if `TIINGO_API_KEY` is unset. Compose also checks for it before starting.
 - The health check polls `/health`, which returns 200 unconditionally. It deliberately does not use `/screen`, since that endpoint requires a `symbol` parameter and answers 400 without one.
+
+### Configuration
+
+Everything below is optional except the API key. Both deployments run the same
+image, so these are the only knobs that differ.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `TIINGO_API_KEY` | none | Required. `server.py` calls `check_setup()` at import time and exits if it is missing. |
+| `MIZAN_ADMIN_TOKEN` | unset | Guards `/cache/clear` and `/cache/stats` via the `X-Admin-Token` header or a `token` query parameter. **Set this on any public deployment.** With it unset those endpoints accept loopback only, which is fine locally and is not what you want in production. |
+| `MIZAN_CORS_ORIGIN` | unset | Unset means same-origin only, which is correct when this app serves its own frontend. Set it only when the UI is hosted elsewhere. |
+| `MIZAN_RATE_LIMIT` | `60` | Screens per client per minute. Sized to clear a full watchlist refresh, which is one request per saved ticker. |
+| `MIZAN_TRUST_PROXY` | `1` | Read the client address from the first hop of `X-Forwarded-For`. Correct behind the Lambda Function URL and Render's router, where every request otherwise arrives from loopback and the limit would apply globally instead of per client. Set to `0` on a host reached directly, where the header is caller-controlled and could be used to bypass the limit. |
+
+Three operational notes:
+
+- `/usage` and `/cache/stats` count **this process only**. With several gunicorn
+  workers, several Lambda containers, or both, the real totals are higher and
+  `/usage` is not the account total.
+- A public Function URL needs two `lambda:AddPermission` grants before it will
+  serve traffic. `create-function.sh` now applies both on every run, so a
+  first run that failed partway is repairable by re-running it.
+- `/health` reports the live values of the settings above, so you can confirm
+  what a running container actually picked up.
+
+The `/screen` response carries three fields beyond the verdict, for callers that
+want to render data quality rather than a bare result: `dataQuality`
+(`complete` or `partial`), `missingInputs` (the field names that could not be
+verified), and `dataAsOf` (when the underlying prices were observed).
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+The suite runs offline and needs no API key; it stubs the upstream providers and
+drives the Flask app with its test client. It covers the rules engine against
+every entry in both databases and pins the threshold boundaries, so a change to
+a screening rule fails a test rather than silently altering verdicts.
 
 ### Architecture
 

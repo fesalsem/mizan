@@ -11,7 +11,9 @@
 # Safe to re-run. Every step checks for the resource first and skips it if it
 # is already there, so a failure halfway through does not require starting over.
 #
-# The image must already be in ECR. Run deploy.sh first if it is not.
+# The image must already be in ECR. On the first deploy, create the repository
+# and push the image first (SKIP_UPDATE=1 ./deploy.sh); docs/aws-deployment.md
+# has the full first-deploy order.
 #
 # Usage:
 #   TIINGO_API_KEY=xxx ./create-function.sh
@@ -42,16 +44,22 @@ if [[ -z "${TIINGO_API_KEY:-}" && -f "${ENV_FILE}" ]]; then
   export TIINGO_API_KEY
 fi
 
-case "${TIINGO_API_KEY:-}" in
+# Match placeholders case-insensitively. Tutorial values like YOUR_TIINGO_KEY
+# and REPLACE_ME are the ones people actually paste, and a case-sensitive match
+# let them through to become the function's live key. Prefer a key exported
+# from the environment or read from a secrets store over one passed on the
+# command line, which lands in shell history; both routes still work here.
+KEY_LOWER="$(printf '%s' "${TIINGO_API_KEY:-}" | tr '[:upper:]' '[:lower:]')"
+case "${KEY_LOWER}" in
   "")
     echo "TIINGO_API_KEY is not set." >&2
     echo "Either export it, or put a real key in ${ENV_FILE}." >&2
     echo "Usage: TIINGO_API_KEY=xxx $0" >&2
     exit 1
     ;;
-  *placeholder*|*replace*|*your_*|*xxx*)
-    echo "TIINGO_API_KEY still looks like the placeholder in ${ENV_FILE}." >&2
-    echo "Put the real key there, or export a real one." >&2
+  *placeholder*|*replace*|*your_*|*your-*|*xxx*|*changeme*|*change_me*|*example*|*dummy*|*sample*|*todo*|*insert_*)
+    echo "TIINGO_API_KEY still looks like a placeholder, not a real key." >&2
+    echo "Put the real key in ${ENV_FILE}, or export a real one." >&2
     exit 1
     ;;
 esac
@@ -85,22 +93,27 @@ if ! aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
     --role-name "${ROLE_NAME}" \
     --assume-role-policy-document "file://${SCRIPT_DIR}/lambda-trust-policy.json" \
     --description "Execution role for the Mizan Lambda function" >/dev/null
-  # Logs only. The function reads no other AWS service, so it needs no other
-  # permission. Keeping the policy this narrow is the point of a separate role.
-  aws iam attach-role-policy \
-    --role-name "${ROLE_NAME}" \
-    --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 fi
+
+# Attached unconditionally, outside the create branch. attach-role-policy is
+# idempotent, and tying it to role creation meant a re-run after a failed
+# attach skipped it, leaving the function unable to write logs, which makes
+# every later debugging session harder.
+#
+# Logs only. The function reads no other AWS service, so it needs no other
+# permission. Keeping the policy this narrow is the point of a separate role.
+aws iam attach-role-policy \
+  --role-name "${ROLE_NAME}" \
+  --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 echo "  ok"
 
 # IAM is eventually consistent. A role created seconds ago is often not yet
-# assumable, and create-function fails with "cannot be assumed by Lambda".
-echo "Waiting for the role to become assumable..."
-for _ in $(seq 1 20); do
-  aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.AssumeRolePolicyDocument' >/dev/null 2>&1 \
-    && sleep 5 && break
-  sleep 3
-done
+# assumable, and create-function then fails with "cannot be assumed by Lambda".
+# get-role answers as soon as the role exists, which is a different condition,
+# so polling it breaks on the first pass and never detects assumability. Wait
+# for existence here; the real assumability wait is the bounded retry around
+# create-function below, since that call is the one that needs the role.
+aws iam wait role-exists --role-name "${ROLE_NAME}"
 
 echo "Lambda function ${FUNCTION_NAME}..."
 if aws lambda get-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1; then
@@ -118,17 +131,67 @@ if aws lambda get-function --function-name "${FUNCTION_NAME}" --region "${REGION
     --function-name "${FUNCTION_NAME}" \
     --environment "Variables={TIINGO_API_KEY=${TIINGO_API_KEY},PORT=8080}" \
     --region "${REGION}" >/dev/null
+
+  # wait function-active only tracks State, not LastUpdateStatus, so an
+  # asynchronous configuration update that fails (a rotated API key rejected at
+  # validation, for example) was reported as success. Poll LastUpdateStatus and
+  # fail with the reason instead. The brief settle avoids reading the previous
+  # update's "Successful" before Lambda has flipped the status to InProgress.
+  sleep 2
+  CONFIG_STATUS=""
+  for _ in $(seq 1 30); do
+    CONFIG_STATUS="$(aws lambda get-function-configuration \
+      --function-name "${FUNCTION_NAME}" \
+      --region "${REGION}" \
+      --query 'LastUpdateStatus' --output text)"
+    case "${CONFIG_STATUS}" in
+      Successful) break ;;
+      Failed)
+        echo "Configuration update failed:" >&2
+        aws lambda get-function-configuration \
+          --function-name "${FUNCTION_NAME}" \
+          --region "${REGION}" \
+          --query 'LastUpdateStatusReason' --output text >&2
+        exit 1
+        ;;
+      *) sleep 2 ;;
+    esac
+  done
+  if [[ "${CONFIG_STATUS}" != "Successful" ]]; then
+    echo "Configuration update did not finish within 60 seconds (last status: ${CONFIG_STATUS})." >&2
+    exit 1
+  fi
 else
-  aws lambda create-function \
-    --function-name "${FUNCTION_NAME}" \
-    --package-type Image \
-    --code "ImageUri=${IMAGE_URI}" \
-    --role "${ROLE_ARN}" \
-    --architectures "${ARCH}" \
-    --memory-size "${MEMORY_MB}" \
-    --timeout "${TIMEOUT_S}" \
-    --environment "Variables={TIINGO_API_KEY=${TIINGO_API_KEY},PORT=8080}" \
-    --region "${REGION}" >/dev/null
+  # The execution role's trust policy can take a few seconds to propagate to
+  # Lambda even after iam wait role-exists returns. Retry only that specific
+  # error, a bounded number of times; any other failure is real and is surfaced
+  # at once rather than after ten attempts.
+  for attempt in $(seq 1 10); do
+    if CREATE_ERR="$(aws lambda create-function \
+        --function-name "${FUNCTION_NAME}" \
+        --package-type Image \
+        --code "ImageUri=${IMAGE_URI}" \
+        --role "${ROLE_ARN}" \
+        --architectures "${ARCH}" \
+        --memory-size "${MEMORY_MB}" \
+        --timeout "${TIMEOUT_S}" \
+        --environment "Variables={TIINGO_API_KEY=${TIINGO_API_KEY},PORT=8080}" \
+        --region "${REGION}" 2>&1)"; then
+      break
+    fi
+    if [[ "${CREATE_ERR}" == *"cannot be assumed by Lambda"* ]]; then
+      if [[ "${attempt}" -ge 10 ]]; then
+        echo "The execution role was still not assumable by Lambda after 10 attempts." >&2
+        echo "Re-run this script once IAM has settled; nothing else needs changing." >&2
+        exit 1
+      fi
+      echo "  role not assumable yet (attempt ${attempt}/10); waiting..."
+      sleep 5
+      continue
+    fi
+    echo "${CREATE_ERR}" >&2
+    exit 1
+  done
 fi
 
 aws lambda wait function-active --function-name "${FUNCTION_NAME}" --region "${REGION}"
@@ -144,31 +207,49 @@ else
     --function-name "${FUNCTION_NAME}" \
     --auth-type NONE \
     --region "${REGION}" >/dev/null
-
-  # A public Function URL needs TWO permissions, not one. Granting only
-  # lambda:InvokeFunctionUrl leaves the URL returning 403 Forbidden on every
-  # request, which looks like a bug in the function rather than in the policy.
-  #
-  # Note the flags differ. --function-url-auth-type is rejected on
-  # InvokeFunction with "FunctionUrlAuthType is only supported for
-  # lambda:InvokeFunctionUrl action"; that action takes
-  # --invoked-via-function-url instead.
-  aws lambda add-permission \
-    --function-name "${FUNCTION_NAME}" \
-    --statement-id FunctionURLAllowPublicAccess \
-    --action lambda:InvokeFunctionUrl \
-    --principal "*" \
-    --function-url-auth-type NONE \
-    --region "${REGION}" >/dev/null
-
-  aws lambda add-permission \
-    --function-name "${FUNCTION_NAME}" \
-    --statement-id FunctionURLAllowInvokeAction \
-    --action lambda:InvokeFunction \
-    --principal "*" \
-    --invoked-via-function-url \
-    --region "${REGION}" >/dev/null
 fi
+
+# A public Function URL needs TWO permissions, not one. Granting only
+# lambda:InvokeFunctionUrl leaves the URL returning 403 Forbidden on every
+# request, which looks like a bug in the function rather than in the policy.
+#
+# The grants are made unconditionally and idempotently. Tying them to URL
+# creation meant a run that created the URL but died before adding them could
+# never be repaired: every re-run took the "exists" branch, skipped the grants,
+# and reported success while the public URL returned 403 forever.
+#
+# add-permission fails with ResourceConflictException when the statement
+# already exists, so check the function's resource policy first and add only
+# what is missing.
+add_url_permission() {
+  local statement_id="$1"
+  shift
+  local policy
+  policy="$(aws lambda get-policy --function-name "${FUNCTION_NAME}" \
+    --region "${REGION}" --query Policy --output text 2>/dev/null || true)"
+  if grep -qF "${statement_id}" <<<"${policy}"; then
+    echo "  permission ${statement_id} already present"
+  else
+    # Note the flags differ. --function-url-auth-type is rejected on
+    # InvokeFunction with "FunctionUrlAuthType is only supported for
+    # lambda:InvokeFunctionUrl action"; that action takes
+    # --invoked-via-function-url instead.
+    aws lambda add-permission \
+      --function-name "${FUNCTION_NAME}" \
+      --statement-id "${statement_id}" \
+      --region "${REGION}" "$@" >/dev/null
+  fi
+}
+
+add_url_permission FunctionURLAllowPublicAccess \
+  --action lambda:InvokeFunctionUrl \
+  --principal "*" \
+  --function-url-auth-type NONE
+
+add_url_permission FunctionURLAllowInvokeAction \
+  --action lambda:InvokeFunction \
+  --principal "*" \
+  --invoked-via-function-url
 
 URL="$(aws lambda get-function-url-config --function-name "${FUNCTION_NAME}" \
         --region "${REGION}" --query FunctionUrl --output text)"

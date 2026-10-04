@@ -56,3 +56,26 @@ jobs:
       - name: Container logs
         if: always()
         run: docker logs mizan
+
+  # Runs the offline pytest suite. Every test stubs the data provider and the
+  # Tiingo key is a dummy, so the job needs no credentials and no network quota.
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          TIINGO_API_KEY: dummy
+        run: python -m pytest -q

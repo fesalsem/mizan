@@ -21,6 +21,9 @@ REGION="${AWS_REGION:-ap-southeast-1}"
 FUNCTION_NAME="${FUNCTION_NAME:-mizan}"
 REPO_NAME="${REPO_NAME:-mizan}"
 IMAGE_TAG="${IMAGE_TAG:-lambda}"
+# Same variable and default as create-function.sh. The default matches the
+# architecture that script creates the function with, so the two cannot drift.
+ARCH="${ARCH:-x86_64}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -34,9 +37,23 @@ aws ecr get-login-password --region "${REGION}" \
   | docker login --username AWS --password-stdin "${REGISTRY}"
 
 echo "Building and pushing mizan-lambda (${IMAGE_TAG}) from ${REPO_ROOT}..."
+# Map the Lambda architecture name to the buildx platform. Deriving this from
+# ARCH, rather than hardcoding amd64, is what keeps the image and the function
+# in agreement: create-function.sh creates an arm64 function when ARCH=arm64,
+# and an amd64 image for it fails at invoke time with a confusing (and easy to
+# misread) exec format error.
+case "${ARCH}" in
+  x86_64|amd64) PLATFORM="linux/amd64" ;;
+  arm64|aarch64) PLATFORM="linux/arm64" ;;
+  *)
+    echo "Unsupported ARCH='${ARCH}'. Set it to x86_64 or arm64, matching create-function.sh." >&2
+    exit 1
+    ;;
+esac
+
 # Both flag groups are load-bearing.
 #
-# --platform linux/amd64: on an arm64 machine the default would be arm64, which
+# --platform ${PLATFORM}: on an arm64 machine the default would be arm64, which
 # the function was not created for, and the mismatch surfaces at invoke time as
 # a confusing exec format error.
 #
@@ -50,7 +67,7 @@ echo "Building and pushing mizan-lambda (${IMAGE_TAG}) from ${REPO_ROOT}..."
 # "docker push" afterwards. Both were tried; only this form was verified to
 # leave the tag pointing at a manifest.
 docker buildx build \
-  --platform linux/amd64 \
+  --platform "${PLATFORM}" \
   --provenance=false \
   --sbom=false \
   --file "${REPO_ROOT}/Dockerfile.lambda" \
@@ -60,13 +77,18 @@ docker buildx build \
 
 # Prove the tag is a manifest and not an index. This is the check that would
 # have caught the failure before AWS did.
+#
+# describe-images reports imageManifestMediaType directly, so the check needs
+# no JSON parser. The previous version piped the manifest through "python -c",
+# which aborts under set -e on any host that ships only python3 (macOS, most
+# modern Linux), killing the script right after the push and before the
+# function was updated, with no clear error and the old image still live.
 echo "Verifying the tag points at a manifest, not an index..."
-MEDIA_TYPE="$(aws ecr batch-get-image \
+MEDIA_TYPE="$(aws ecr describe-images \
   --repository-name "${REPO_NAME}" \
   --image-ids imageTag="${IMAGE_TAG}" \
   --region "${REGION}" \
-  --query 'images[0].imageManifest' --output text \
-  | python -c 'import json,sys; print(json.load(sys.stdin).get("mediaType"))')"
+  --query 'imageDetails[0].imageManifestMediaType' --output text)"
 echo "  ${MEDIA_TYPE}"
 case "${MEDIA_TYPE}" in
   *image.index*|*manifest.list*)
