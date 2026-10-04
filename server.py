@@ -1671,10 +1671,36 @@ CORS_ORIGIN = os.environ.get("MIZAN_CORS_ORIGIN", "").strip()
 # an unconfigured token must not mean "open to the internet".
 ADMIN_TOKEN = os.environ.get("MIZAN_ADMIN_TOKEN", "").strip()
 
-RATE_LIMIT_PER_MINUTE = int(os.environ.get("MIZAN_RATE_LIMIT", "30"))
+# 60 rather than something tighter: the frontend refreshes a whole watchlist in
+# one action, so the ceiling has to clear the largest watchlist a person could
+# plausibly keep, not just one search. It still bounds a scripted loop, which
+# previously had no bound at all.
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("MIZAN_RATE_LIMIT", "60"))
+
+# The Lambda Web Adapter and Render's router both terminate the connection and
+# forward to gunicorn over loopback, so request.remote_addr is 127.0.0.1 for
+# every visitor on both deployments. Two things break if that address is
+# treated as the client identity: the per-client limit collapses into a single
+# global bucket shared by everyone, and the loopback fallback in
+# _admin_authorised() makes the mutating endpoints world-writable. The real
+# client is the first hop in X-Forwarded-For.
+#
+# Set MIZAN_TRUST_PROXY=0 where the app is reached directly. There, the header
+# is attacker-controlled and trusting it would let one caller mint a fresh
+# bucket per request and bypass the limit entirely.
+TRUST_PROXY = os.environ.get("MIZAN_TRUST_PROXY", "1") == "1"
 
 _rl_lock    = threading.Lock()
 _rl_buckets: dict = {}
+
+def client_ip() -> str:
+    if TRUST_PROXY:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            first = forwarded.split(",")[0].strip()
+            if first:
+                return first
+    return request.remote_addr or "unknown"
 
 def rate_limit_ok(client: str) -> bool:
     """
@@ -1703,7 +1729,13 @@ def _admin_authorised() -> bool:
         supplied = (request.headers.get("X-Admin-Token")
                     or request.args.get("token") or "")
         return hmac.compare_digest(supplied, ADMIN_TOKEN)
-    return (request.remote_addr or "") in ("127.0.0.1", "::1")
+    # Loopback counts only for a request that arrived directly. Behind the
+    # Lambda Web Adapter an internet request also reports 127.0.0.1, so without
+    # the forwarding-header test these endpoints would be open to anyone
+    # whenever no token is configured.
+    if request.headers.get("X-Forwarded-For"):
+        return False
+    return client_ip() in ("127.0.0.1", "::1")
 
 @app.after_request
 def add_headers(response):
@@ -1734,7 +1766,7 @@ def screen():
     if not symbol or not re.fullmatch(r'[A-Za-z0-9.\-]{1,12}', symbol):
         return jsonify({"ok":False,"error":"Invalid or missing symbol"}), 400
 
-    if not rate_limit_ok(request.remote_addr or "unknown"):
+    if not rate_limit_ok(client_ip()):
         return jsonify({"ok":False,
                         "error":"Too many requests. Please wait a minute and try again."}), 429
 
@@ -1815,6 +1847,7 @@ def health():
                     "bursa_stocks":len(BURSA_DB),
                     "rate_limit_per_minute":RATE_LIMIT_PER_MINUTE,
                     "cors_origin":CORS_ORIGIN or "same-origin only",
+                    "trust_proxy":TRUST_PROXY,
                     "cache_clear":"token required" if ADMIN_TOKEN else "loopback only"})
 
 if __name__ == "__main__":
