@@ -550,7 +550,14 @@ def load_sc_list():
         return _sc_list
 
 def check_sc_list(ticker):
-    clean = ticker.replace(".KL","").replace(".KLS","")
+    # Longest suffix first. ".KLS" contains ".KL", so stripping ".KL" first
+    # leaves the trailing "S" behind: "1155.KLS" became "1155S", which is not
+    # numeric, so a listed stock was reported as not on the list at all.
+    clean = ticker.strip().upper()
+    for suffix in (".KLS", ".KL"):
+        if clean.endswith(suffix):
+            clean = clean[: -len(suffix)]
+            break
     if not clean.isdigit():
         return {"found": False, "status": "not_applicable",
                 "note": "SC Malaysia list covers Bursa Malaysia stocks only."}
