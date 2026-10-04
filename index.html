@@ -4,6 +4,9 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Mizan — Halal Investment Screener · Bursa Malaysia</title>
+<meta name="mizan-api-base" content=""/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Noto+Naskh+Arabic:wght@400;600&display=swap" rel="stylesheet"/>
 <style>
 /* ══════════════════════════════════════════════
@@ -19,7 +22,7 @@
   --border2:#263342;
   --gold:#c8a951;
   --gold2:#e8c96a;
-  --gold-dim:#6b5520;
+  --gold-dim:#a8873a;
   --gold-glow:#c8a95120;
   --teal:#2ec4b6;
   --teal-dim:#0d3d39;
@@ -34,7 +37,7 @@
   --red-glow:#f04f4f18;
   --text:#dde6f0;
   --text2:#8b9db0;
-  --text3:#4a5a6a;
+  --text3:#7d8fa3;
   --mono:'IBM Plex Mono',monospace;
   --sans:'Syne',sans-serif;
   --r:10px;
@@ -465,8 +468,10 @@ body::before{
 .toast.error{border-color:var(--red);color:var(--red)}
 
 @media(max-width:700px){
-  .topbar{padding:0 16px}
+  .topbar{padding:10px 16px;height:auto;flex-wrap:wrap;gap:8px}
   .main{padding:16px}
+  .nav-tabs{width:100%;margin-left:0;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap}
+  .nav-tab{padding:6px 10px;font-size:0.72rem;flex:0 0 auto;white-space:nowrap}
   .nav-tab span{display:none}
   .price-row{gap:16px}
   .price-meta{margin-left:0;width:100%}
@@ -550,6 +555,35 @@ body::before{
   border-radius:var(--r-sm);border-left:3px solid var(--gold-dim);
 }
 
+/* ── ACCESSIBILITY / RESPONSIVE HELPERS ── */
+.sr-only{
+  position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;
+}
+.inline-link{
+  background:none;border:none;padding:0;color:var(--text2);
+  cursor:pointer;font:inherit;text-decoration:underline;text-underline-offset:2px;
+}
+.price-main.unavailable{
+  font-size:1rem;font-family:var(--sans);font-weight:600;color:var(--text3);
+}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.wl-table{min-width:680px}
+.check-item.na{background:var(--surface2);border-color:var(--border)}
+.check-item.na .check-icon{color:var(--text3)}
+.metric-value.na{color:var(--text3)}
+.verdict-note{font-size:0.72rem;color:var(--amber);margin-top:4px}
+
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{
+    animation-duration:0.001ms!important;
+    animation-iteration-count:1!important;
+    transition-duration:0.001ms!important;
+    scroll-behavior:auto!important;
+  }
+}
+
 </style>
 </head>
 <body>
@@ -605,6 +639,7 @@ body::before{
           <input id="searchInput" class="search-input"
             type="text"
             placeholder="Enter ticker or name  e.g.  TSLA  ·  NVDA  ·  1295  ·  MAYBANK"
+            aria-label="Stock ticker or company name to screen"
             autocomplete="off" autocorrect="off" spellcheck="false"/>
           <button class="btn-primary" id="screenBtn" onclick="runScreen()">Screen →</button>
         </div>
@@ -628,7 +663,7 @@ body::before{
       </div>
 
       <!-- Loader -->
-      <div id="loader">
+      <div id="loader" role="status" aria-live="polite">
         <div class="loader-ring"></div>
         <div class="loader-text">Fetching live data via backend… (first load may take ~10 seconds)</div>
       </div>
@@ -643,6 +678,7 @@ body::before{
             <div class="verdict-info">
               <div class="verdict-name" id="vName"></div>
               <div class="verdict-reason" id="vReason"></div>
+              <div class="verdict-note" id="vQuality"></div>
             </div>
             <div class="verdict-badges" id="vBadges"></div>
           </div>
@@ -696,7 +732,7 @@ body::before{
             <div class="invest-desc">This tool helps you research. Once you've decided, open your broker account and place the trade there. The links below open each broker's platform with Bursa Malaysia selected.</div>
             <div class="brokers-grid" id="investBrokers"></div>
             <div style="margin-top:14px;font-size:0.75rem;color:var(--text3)">
-              ⚠ No account yet? Visit the <strong style="color:var(--text2);cursor:pointer" onclick="showPanel('brokers')">Brokers tab</strong> for a full comparison.
+              ⚠ No account yet? Visit the <button type="button" class="inline-link" onclick="showPanel('brokers')">Brokers tab</button> for a full comparison.
             </div>
           </div>
 
@@ -712,11 +748,11 @@ body::before{
             </div>
             <div class="purify-inputs">
               <div class="purify-field">
-                <label class="purify-label">Dividend Received</label>
+                <label class="purify-label" for="purifyAmt">Dividend Received</label>
                 <input class="purify-input" id="purifyAmt" type="number" min="0" step="0.01" placeholder="e.g. 100.00"/>
               </div>
               <div class="purify-field" style="max-width:140px">
-                <label class="purify-label">Currency</label>
+                <label class="purify-label" for="purifyCcy">Currency</label>
                 <input class="purify-input" id="purifyCcy" type="text" value="MYR" maxlength="3" style="text-transform:uppercase"/>
               </div>
               <button class="btn-purify" onclick="runPurify()">Calculate →</button>
@@ -794,7 +830,9 @@ body::before{
 </div>
 
 <!-- Toast -->
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<!-- Async result announcements for assistive tech -->
+<div id="srStatus" class="sr-only" role="status" aria-live="polite"></div>
 
 <script>
 /* ══════════════════════════════════════════════════════════
@@ -802,31 +840,33 @@ body::before{
 ══════════════════════════════════════════════════════════ */
 let currentData      = null;
 let currentScreening = null;
-let watchlist        = JSON.parse(localStorage.getItem('mizan_wl') || '[]');
+
+// Request bookkeeping for runScreen: a monotonic token plus an AbortController
+// so a slow earlier /screen response can never overwrite a newer one.
+let screenToken = 0;
+let screenAbort = null;
+
+// Load the watchlist defensively: corrupt localStorage must never abort the
+// whole script at load. On a parse failure the bad value is left in place and
+// also copied to a backup key so nothing is silently destroyed.
+function loadWatchlist() {
+  const raw = localStorage.getItem('mizan_wl');
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('watchlist is not an array');
+    return parsed.filter(e => e && typeof e === 'object' && typeof e.ticker === 'string');
+  } catch (e) {
+    try { localStorage.setItem('mizan_wl_backup', raw); } catch(_) {}
+    console.error('Watchlist data was unreadable; starting with an empty list.', e);
+    return [];
+  }
+}
+let watchlist = loadWatchlist();
 
 /* ══════════════════════════════════════════════════════════
    CONSTANTS
 ══════════════════════════════════════════════════════════ */
-const DEBT_THRESHOLD   = 0.33;
-const INCOME_THRESHOLD = 0.05;
-
-const HARAM_KEYWORDS = [
-  'alcohol','beer','wine','spirit','brew','distill','liquor',
-  'tobacco','cigarette','cigar','vape',
-  'casino','gambling','lottery','bet','gaming resort',
-  'pork','swine','pig',
-  'adult entertainment','pornograph',
-  'conventional bank','money lending','pawnshop',
-  'weapon','arms manufacture','defence contractor','ammunition',
-  'insurance underwriting'
-];
-
-const DOUBTFUL_SECTORS = [
-  'financial services','diversified financial',
-  'media','entertainment',
-  'food & beverage','beverages','hospitality','hotel'
-];
-
 const BROKERS = [
   {
     name:'Rakuten Trade',
@@ -952,18 +992,47 @@ const STEPS = [
    API — talks to local Python backend (server.py)
 ══════════════════════════════════════════════════════════ */
 
-// Auto-detect: use localhost in development, same-origin in production
-// (the frontend is now served by the same Flask backend that hosts these APIs).
-const API = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'
-  ? 'http://localhost:5000'
-  : '';
+// Auto-detect: use localhost in development, same-origin in production.
+// Override via <meta name="mizan-api-base" content="https://host:port">.
+const API_BASE_META = document.querySelector('meta[name="mizan-api-base"]');
+const API_OVERRIDE  = (API_BASE_META && API_BASE_META.content) ? API_BASE_META.content.trim().replace(/\/+$/,'') : '';
+const IS_LOCALHOST  = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+const IS_FILE       = window.location.protocol === 'file:';
+const API = API_OVERRIDE
+  ? API_OVERRIDE
+  : (IS_LOCALHOST || IS_FILE)
+    ? 'http://localhost:5000'   // local dev / opened straight from disk
+    : '';   // same-origin relative URL — works when served by the Flask backend
 
-async function fetchStockData(symbol) {
-  // Check backend is running first
+// Respect the OS "reduce motion" setting for scripted scrolling.
+function motionBehavior() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+}
+
+// Combine an external abort signal with a timeout signal (AbortSignal.any has
+// patchy support, so fall back to a linked controller).
+function combineSignals(signals) {
+  const list = signals.filter(Boolean);
+  if (list.length === 1) return list[0];
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any(list);
+  const ctrl = new AbortController();
+  list.forEach(s => {
+    if (s.aborted) ctrl.abort(s.reason);
+    else s.addEventListener('abort', () => ctrl.abort(s.reason), { once: true });
+  });
+  return ctrl.signal;
+}
+
+async function checkBackend(externalSignal) {
   let health;
   try {
-    health = await fetch(`${API}/health`, { signal: AbortSignal.timeout(3000) });
+    health = await fetch(`${API}/health`, {
+      signal: combineSignals([externalSignal, AbortSignal.timeout(3000)])
+    });
   } catch(e) {
+    // A superseded/cancelled request bubbles up so runScreen can drop it...
+    if (externalSignal && externalSignal.aborted) throw e;
+    // ...otherwise keep the friendly "start the backend" guidance.
     throw new Error(
       'Cannot connect to the Mizan backend.\n\n' +
       'Please run this in your terminal first:\n' +
@@ -972,14 +1041,22 @@ async function fetchStockData(symbol) {
     );
   }
   if (!health.ok) throw new Error('Backend server error. Restart server.py.');
+}
 
+async function fetchScreen(symbol, externalSignal) {
   const resp = await fetch(
     `${API}/screen?symbol=${encodeURIComponent(symbol.trim())}`,
-    { signal: AbortSignal.timeout(30000) }
+    { signal: combineSignals([externalSignal, AbortSignal.timeout(30000)]) }
   );
   const json = await resp.json();
+  // Provider/upstream failures now arrive as 5xx; 400 is genuine bad input.
   if (!json.ok) throw new Error(json.error || 'Failed to fetch stock data.');
   return json.data;  // data + screening already computed by server
+}
+
+async function fetchStockData(symbol, externalSignal) {
+  await checkBackend(externalSignal);
+  return fetchScreen(symbol, externalSignal);
 }
 /* ══════════════════════════════════════════════════════════
    DISPLAY
@@ -989,12 +1066,34 @@ let CCY = 'MYR';
 
 function fmtCcy(v, ccy) {
   const c = ccy || CCY;
-  if (v == null || v === 0) return 'N/A';
+  // Only a missing value is "N/A" — a genuine 0 is a real amount.
+  if (v == null || typeof v !== 'number' || !isFinite(v)) return 'N/A';
   if (v >= 1e12) return `${c} ${(v/1e12).toFixed(2)}T`;
   if (v >= 1e9)  return `${c} ${(v/1e9).toFixed(2)}B`;
   if (v >= 1e6)  return `${c} ${(v/1e6).toFixed(2)}M`;
   if (v >= 1e3)  return `${c} ${(v/1e3).toFixed(1)}K`;
   return `${c} ${v.toFixed(2)}`;
+}
+// Price with null/unavailable handling (server may return null).
+function fmtPrice(v, ccy) {
+  const c = ccy || CCY;
+  return (v == null || typeof v !== 'number' || !isFinite(v)) ? 'N/A' : `${c} ${v.toFixed(4)}`;
+}
+// Escape untrusted strings (server/third-party metadata) before any innerHTML use.
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g,
+    ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+// Look up one screening check's status by a substring of its name, so metric
+// colouring follows the server's verdict instead of duplicating its thresholds.
+function checkStatus(screening, nameMatch) {
+  if (!screening || !Array.isArray(screening.checks)) return null;
+  const c = screening.checks.find(x => x && typeof x.name === 'string' && x.name.includes(nameMatch));
+  return c ? c.status : null;
+}
+// Map any status (including unknown/"n/a") to the four supported CSS states.
+function checkClass(status) {
+  return (status === 'pass' || status === 'warn' || status === 'fail') ? status : 'na';
 }
 // Legacy alias
 function fmyMYR(v) { return fmtCcy(v); }
@@ -1011,59 +1110,86 @@ function renderResult(data, screening) {
   document.getElementById('vName').textContent = s.verdict;
   document.getElementById('vReason').textContent = s.vReason;
 
+  // Partial data must not look clean — surface it next to the verdict.
+  const qEl = document.getElementById('vQuality');
+  if (s.dataQuality === 'partial') {
+    const missing = Array.isArray(s.missingInputs) && s.missingInputs.length
+      ? ` (${s.missingInputs.join(', ')})` : '';
+    qEl.textContent = `⚠ Some figures could not be verified${missing}.`;
+  } else {
+    qEl.textContent = '';
+  }
+
   const riskCls = {LOW:'badge-low',MEDIUM:'badge-medium',HIGH:'badge-high'}[s.risk]||'badge-medium';
-  const recText = s.rec.length > 20 ? s.rec.slice(0,20)+'…' : s.rec;
+  const recText = s.rec && s.rec.length > 20 ? s.rec.slice(0,20)+'…' : (s.rec || '');
   document.getElementById('vBadges').innerHTML =
-    `<span class="badge ${riskCls}">${s.risk} Risk</span>
-     <span class="badge badge-rec">${recText}</span>`;
+    `<span class="badge ${riskCls}">${esc(s.risk)} Risk</span>
+     <span class="badge badge-rec">${esc(recText)}</span>`;
 
   // Company header
+  const timeParts = [`Live · ${data.fetchedAt}`];
+  if (data.dataAsOf) timeParts.push(data.dataAsOf);
   document.getElementById('cTicker').textContent = data.ticker;
   document.getElementById('cName').textContent   = data.name;
   document.getElementById('cSector').textContent = `${data.sector} · ${data.industry}`;
-  document.getElementById('cTime').textContent   = `Live · ${data.fetchedAt}`;
+  document.getElementById('cTime').textContent   = timeParts.join(' · ');
 
-  // Price
-  const upDown = data.changePct >= 0;
+  // Price — server may return null when a live quote is unavailable.
   CCY = data.currency || 'MYR';
-  document.getElementById('pPrice').textContent = `${CCY} ${data.price.toFixed(4)}`;
+  const priceEl = document.getElementById('pPrice');
+  const hasPrice = data.price != null && typeof data.price === 'number' && isFinite(data.price);
+  if (hasPrice) {
+    priceEl.textContent = `${CCY} ${data.price.toFixed(4)}`;
+    priceEl.classList.remove('unavailable');
+  } else {
+    priceEl.textContent = 'Live price unavailable';
+    priceEl.classList.add('unavailable');
+  }
+
   const pch = document.getElementById('pChange');
-  pch.textContent = `${upDown?'▲':'▼'} ${Math.abs(data.changePct).toFixed(2)}% today`;
-  pch.className = `price-change ${upDown?'up':'down'}`;
+  const hasChange = data.changePct != null && typeof data.changePct === 'number' && isFinite(data.changePct);
+  if (hasChange) {
+    const upDown = data.changePct >= 0;
+    pch.textContent = `${upDown?'▲':'▼'} ${Math.abs(data.changePct).toFixed(2)}% today`;
+    pch.className = `price-change ${upDown?'up':'down'}`;
+  } else {
+    pch.textContent = '';
+    pch.className = 'price-change';
+  }
 
   document.getElementById('pMeta').innerHTML = `
     <div class="price-meta-item">
       <div class="price-meta-label">52w High</div>
-      <div class="price-meta-value">${CCY} ${data.week52High.toFixed(4)}</div>
+      <div class="price-meta-value">${fmtPrice(data.week52High, CCY)}</div>
     </div>
     <div class="price-meta-item">
       <div class="price-meta-label">52w Low</div>
-      <div class="price-meta-value">${CCY} ${data.week52Low.toFixed(4)}</div>
+      <div class="price-meta-value">${fmtPrice(data.week52Low, CCY)}</div>
     </div>
     <div class="price-meta-item">
       <div class="price-meta-label">Volume</div>
-      <div class="price-meta-value">${data.volume ? data.volume.toLocaleString() : 'N/A'}</div>
+      <div class="price-meta-value">${data.volume != null && typeof data.volume === 'number' ? data.volume.toLocaleString() : 'N/A'}</div>
     </div>
     <div class="price-meta-item">
       <div class="price-meta-label">Market Cap</div>
       <div class="price-meta-value">${fmyMYR(data.marketCap)}</div>
     </div>`;
 
-  // Sparkline
-  drawSparkline(data.history);
-
-  // Metrics
+  // Metrics — pass/warn/fail colouring is taken from the server's own
+  // screening.checks verdicts (no client-side threshold duplication).
+  const debtCls   = checkStatus(s, 'Debt-to-Assets');
+  const incomeCls = checkStatus(s, 'Non-Permissible Revenue');
+  const ghararCls = checkStatus(s, 'Gharar Check');
   const metrics = [
     { label:'Debt / Assets', value: data.debtRatio != null ? fmtPct(data.debtRatio) : 'N/A',
-      cls: data.debtRatio == null ? '' : data.debtRatio > 0.33 ? (data.debtRatio > 0.5 ? 'fail':'warn') : 'pass' },
+      cls: debtCls ? checkClass(debtCls) : '' },
     { label:'Interest / Revenue', value: data.interestRatio != null ? fmtPct(data.interestRatio) : 'N/A',
-      cls: data.interestRatio == null ? '' : data.interestRatio > 0.05 ? (data.interestRatio > 0.2 ? 'fail':'warn') : 'pass' },
+      cls: incomeCls ? checkClass(incomeCls) : '' },
     { label:'P/E Ratio',    value: data.peRatio  != null ? `${fmtNum(data.peRatio)}x`  : 'N/A', cls:'' },
     { label:'P/B Ratio',    value: data.pbRatio  != null ? `${fmtNum(data.pbRatio,2)}x`: 'N/A', cls:'' },
     { label:'Profit Margin',value: fmtPct(data.profitMargin),
-      cls: data.profitMargin == null ? '' : data.profitMargin < 0 ? 'fail' : data.profitMargin > 0.1 ? 'pass' : '' },
-    { label:'Return on Equity', value: fmtPct(data.returnOnEquity),
-      cls: data.returnOnEquity == null ? '' : data.returnOnEquity > 0.12 ? 'pass' : '' },
+      cls: ghararCls ? checkClass(ghararCls) : '' },
+    { label:'Return on Equity', value: fmtPct(data.returnOnEquity), cls:'' },
     { label:'Return on Assets', value: fmtPct(data.returnOnAssets), cls:'' },
     { label:'Dividend Yield',   value: fmtPct(data.dividendYield), cls:'' },
     { label:'Total Assets',     value: fmyMYR(data.totalAssets), cls:'' },
@@ -1076,29 +1202,34 @@ function renderResult(data, screening) {
        <div class="metric-value ${m.cls}">${m.value}</div>
      </div>`).join('');
 
-  // Checks
-  const icons = { pass:'✓', warn:'◐', fail:'✗' };
-  document.getElementById('checksList').innerHTML = s.checks.map(c =>
-    `<div class="check-item ${c.status}">
-       <div class="check-icon">${icons[c.status]}</div>
+  // Checks — escaped; unrecognised statuses fall back to a neutral "n/a" state
+  // (never "undefined" and never treated as a failure).
+  const icons = { pass:'✓', warn:'◐', fail:'✗', na:'–' };
+  const checks = Array.isArray(s.checks) ? s.checks : [];
+  document.getElementById('checksList').innerHTML = checks.map(c => {
+    const cls  = checkClass(c.status);
+    const icon = icons[cls] || '–';
+    return `<div class="check-item ${cls}">
+       <div class="check-icon">${icon}</div>
        <div class="check-body">
-         <div class="check-name">${c.name}</div>
-         <div class="check-detail">${c.detail}</div>
+         <div class="check-name">${esc(c.name)}</div>
+         <div class="check-detail">${esc(c.detail)}</div>
        </div>
-     </div>`).join('');
+     </div>`;
+  }).join('');
 
-  // Invest brokers (compact)
+  // Invest brokers (compact) — real anchor so the card is keyboard-focusable.
   document.getElementById('investBrokers').innerHTML = BROKERS.map(b =>
-    `<div class="broker-card" onclick="window.open('${b.url}','_blank')">
-       <div class="broker-name">${b.name}</div>
-       <div class="broker-tagline">${b.tagline}</div>
+    `<a class="broker-card" href="${esc(b.url)}" target="_blank" rel="noopener">
+       <div class="broker-name">${esc(b.name)}</div>
+       <div class="broker-tagline">${esc(b.tagline)}</div>
        <div class="broker-tags">
-         ${b.tags.slice(0,3).map(t=>`<span class="broker-tag${t.includes('Halal')||t.includes('Shariah')||t.includes('Islamic')?' halal':''}">${t}</span>`).join('')}
+         ${b.tags.slice(0,3).map(t=>`<span class="broker-tag${t.includes('Halal')||t.includes('Shariah')||t.includes('Islamic')?' halal':''}">${esc(t)}</span>`).join('')}
        </div>
        <div class="broker-link-row">
          <span class="broker-link-label">Open account →</span>
        </div>
-     </div>`).join('');
+     </a>`).join('');
 
   // SC Malaysia check banner
   renderSCBanner(data.scCheck);
@@ -1106,22 +1237,34 @@ function renderResult(data, screening) {
   // Purification calculator (show when relevant)
   showPurifySection(data);
 
+  // Reveal first, then draw: the sparkline needs the panel's real width.
   document.getElementById('resultSection').classList.add('visible');
-  document.getElementById('resultSection').scrollIntoView({behavior:'smooth',block:'start'});
+  lastHistory = Array.isArray(data.history) ? data.history : [];
+  drawSparkline(lastHistory);
+  document.getElementById('resultSection').scrollIntoView({ behavior: motionBehavior(), block:'start' });
+  document.getElementById('srStatus').textContent = `${s.verdict} for ${data.ticker}. ${s.rec || ''}`;
 }
 
 /* ── SPARKLINE CANVAS ── */
+let lastHistory = [];
 function drawSparkline(history) {
+  lastHistory = Array.isArray(history) ? history : [];
   const canvas = document.getElementById('sparkCanvas');
   const wrap   = canvas.parentElement;
-  canvas.width  = wrap.clientWidth || 600;
+  const cssW   = wrap.clientWidth;
+  // Not laid out yet (panel still hidden) — redraw on reveal/resize instead of
+  // falling back to a mismatched 600px internal width that gets upscaled.
+  if (!cssW) return;
+  canvas.width  = cssW;
   canvas.height = 80;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0,0,canvas.width,canvas.height);
 
-  const prices = history.map(h => h.close).filter(Boolean);
+  const prices = lastHistory
+    .map(h => h && h.close)
+    .filter(v => typeof v === 'number' && isFinite(v));
   if (prices.length < 2) {
-    ctx.fillStyle = '#4a5a6a';
+    ctx.fillStyle = '#7d8fa3';
     ctx.font = '12px IBM Plex Mono';
     ctx.fillText('Price history not available', 10, 40);
     return;
@@ -1165,9 +1308,16 @@ function drawSparkline(history) {
   // Range labels
   document.getElementById('sparkRange').innerHTML =
     `<span>Low: ${CCY} ${min.toFixed(4)}</span>
-     <span style="color:var(--text3)">${history[0]?.date || ''} → ${history[history.length-1]?.date || ''}</span>
+     <span style="color:var(--text3)">${esc(lastHistory[0]?.date || '')} → ${esc(lastHistory[lastHistory.length-1]?.date || '')}</span>
      <span>High: ${CCY} ${max.toFixed(4)}</span>`;
 }
+
+// Keep the sparkline crisp when the viewport (and thus the panel) changes size.
+window.addEventListener('resize', () => {
+  if (lastHistory.length && document.getElementById('resultSection').classList.contains('visible')) {
+    drawSparkline(lastHistory);
+  }
+});
 
 /* ══════════════════════════════════════════════════════════
    ACTIONS
@@ -1176,25 +1326,38 @@ async function runScreen() {
   const q = document.getElementById('searchInput').value.trim();
   if (!q) { showToast('Enter a stock code or name', 'error'); return; }
 
+  // Claim a new token and cancel any request still in flight, so a slow older
+  // response can never render over a newer one (and a stale failure can't hide
+  // a newer success).
+  const token = ++screenToken;
+  if (screenAbort) screenAbort.abort();
+  screenAbort = new AbortController();
+  const signal = screenAbort.signal;
+
   document.getElementById('resultSection').classList.remove('visible');
   document.getElementById('loader').classList.add('visible');
   document.getElementById('screenBtn').disabled = true;
 
   try {
     // fetchStockData returns full data including .screening from the backend
-    currentData      = await fetchStockData(q);
-    currentScreening = currentData.screening;
+    const data = await fetchStockData(q, signal);
+    if (token !== screenToken) return;   // superseded — ignore stale success
+    currentData      = data;
+    currentScreening = data.screening;
     document.getElementById('loader').classList.remove('visible');
     document.getElementById('screenBtn').disabled = false;
+    hideBackendPrompt();                 // a manual success clears the stale prompt
     renderResult(currentData, currentScreening);
     // Show cache badge if served from cache
-    if (currentData._cached) renderCacheIndicator(true);
+    if (currentData._cached) renderCacheIndicator();
   } catch(err) {
+    if (token !== screenToken) return;   // superseded — drop stale failure
     document.getElementById('loader').classList.remove('visible');
     document.getElementById('screenBtn').disabled = false;
+    const msg = err && err.message ? err.message : String(err);
     // Show multi-line errors nicely
-    showToast(err.message.split('\n')[0], 'error');
-    if (err.message.includes('server.py')) {
+    showToast(msg.split('\n')[0], 'error');
+    if (msg.includes('server.py')) {
       document.getElementById('resultSection').classList.remove('visible');
       showBackendPrompt();
     }
@@ -1232,10 +1395,14 @@ function showBackendPrompt() {
   el.style.display = 'block';
 }
 
-function quickSearch(code) {
-  document.getElementById('searchInput').value = code;
+function hideBackendPrompt() {
   const bp = document.getElementById('backendPrompt');
   if (bp) bp.style.display = 'none';
+}
+
+function quickSearch(code) {
+  document.getElementById('searchInput').value = code;
+  hideBackendPrompt();
   runScreen();
 }
 
@@ -1272,19 +1439,37 @@ function removeFromWatchlist(ticker) {
 async function refreshWatchlist() {
   if (!watchlist.length) return;
   showToast('Refreshing live prices…');
-  for (let i = 0; i < watchlist.length; i++) {
-    try {
-      const d  = await fetchStockData(watchlist[i].ticker.replace('.KL',''));
-      const sc = d.screening;
-      watchlist[i].price     = d.price;
-      watchlist[i].changePct = d.changePct;
-      watchlist[i].currency  = d.currency || 'MYR';
-      watchlist[i].verdict   = sc.verdict;
-      watchlist[i].vClass    = sc.vClass;
-      watchlist[i].risk      = sc.risk;
-      watchlist[i].rec       = sc.rec;
-    } catch(e) { /* skip on error */ }
+
+  // One health check for the whole batch (not one per ticker), then screen with
+  // a small bounded pool — fewer provider-quota hits and faster than serial.
+  try {
+    await checkBackend();
+  } catch(e) {
+    showToast('Backend not reachable — refresh skipped', 'error');
+    return;
   }
+
+  const tickers = watchlist.map(e => e.ticker.replace('.KL',''));
+  const POOL = 4;
+  let next = 0;
+  async function worker() {
+    while (next < tickers.length) {
+      const i = next++;   // read+increment is synchronous, safe across workers
+      try {
+        const d  = await fetchScreen(tickers[i]);
+        const sc = d.screening;
+        watchlist[i].price     = d.price;
+        watchlist[i].changePct = d.changePct;
+        watchlist[i].currency  = d.currency || 'MYR';
+        watchlist[i].verdict   = sc.verdict;
+        watchlist[i].vClass    = sc.vClass;
+        watchlist[i].risk      = sc.risk;
+        watchlist[i].rec       = sc.rec;
+      } catch(e) { /* skip on error */ }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(POOL, tickers.length) }, worker));
+
   localStorage.setItem('mizan_wl', JSON.stringify(watchlist));
   document.getElementById('wlLastRefresh').textContent =
     `Last refresh: ${new Date().toLocaleTimeString('en-MY')}`;
@@ -1303,43 +1488,124 @@ function screenFromWatchlist(ticker) {
 ══════════════════════════════════════════════════════════ */
 function renderWatchlist() {
   const el = document.getElementById('wlContent');
+  el.textContent = '';
   if (!watchlist.length) {
-    el.innerHTML = `<div class="wl-empty">
-      <div class="wl-empty-icon">📋</div>
-      No stocks in watchlist yet. Screen a stock and click "Add to Watchlist".
-    </div>`;
+    const empty = document.createElement('div');
+    empty.className = 'wl-empty';
+    const icon = document.createElement('div');
+    icon.className = 'wl-empty-icon';
+    icon.textContent = '📋';
+    empty.appendChild(icon);
+    empty.appendChild(document.createTextNode(' No stocks in watchlist yet. Screen a stock and click "Add to Watchlist".'));
+    el.appendChild(empty);
     return;
   }
-  el.innerHTML = `
-    <table class="wl-table">
-      <thead><tr>
-        <th>Stock</th><th>Price</th><th>Change</th>
-        <th>Verdict</th><th>Risk</th><th>Recommendation</th><th></th>
-      </tr></thead>
-      <tbody>
-        ${watchlist.map(e => {
-          const up   = e.changePct >= 0;
-          const rCls = {LOW:'badge-low',MEDIUM:'badge-medium',HIGH:'badge-high'}[e.risk]||'badge-medium';
-          return `<tr>
-            <td>
-              <div class="wl-ticker">${e.ticker}</div>
-              <div class="wl-name">${(e.name||'').slice(0,32)}</div>
-            </td>
-            <td class="wl-price">${e.currency||''} ${e.price?.toFixed(4)||'—'}</td>
-            <td class="${'wl-change '+(up?'up':'down')}">${up?'▲':'▼'} ${Math.abs(e.changePct||0).toFixed(2)}%</td>
-            <td><span class="verdict-pill ${e.vClass||''}">${e.verdict||'—'}</span></td>
-            <td><span class="badge ${rCls}">${e.risk||'—'}</span></td>
-            <td style="font-size:0.75rem;color:var(--text2);max-width:160px">${e.rec||'—'}</td>
-            <td>
-              <div class="wl-actions">
-                <button class="wl-btn" onclick="screenFromWatchlist('${e.ticker}')">View</button>
-                <button class="wl-btn del" onclick="removeFromWatchlist('${e.ticker}')">✕</button>
-              </div>
-            </td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>`;
+
+  // Built with DOM APIs + textContent so provider-sourced names/recs can never
+  // be parsed as HTML, and buttons are real listeners (no data in code strings).
+  const scroll = document.createElement('div');
+  scroll.className = 'table-scroll';
+  const table = document.createElement('table');
+  table.className = 'wl-table';
+
+  const thead = document.createElement('thead');
+  const hrow = document.createElement('tr');
+  ['Stock','Price','Change','Verdict','Risk','Recommendation',''].forEach(h => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    hrow.appendChild(th);
+  });
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  watchlist.forEach(e => {
+    const tr = document.createElement('tr');
+
+    // Stock
+    const tdStock = document.createElement('td');
+    const tick = document.createElement('div');
+    tick.className = 'wl-ticker';
+    tick.textContent = e.ticker || '';
+    const nm = document.createElement('div');
+    nm.className = 'wl-name';
+    nm.textContent = (e.name || '').slice(0, 32);
+    tdStock.append(tick, nm);
+    tr.appendChild(tdStock);
+
+    // Price
+    const tdPrice = document.createElement('td');
+    tdPrice.className = 'wl-price';
+    const priceOk = e.price != null && typeof e.price === 'number' && isFinite(e.price);
+    tdPrice.textContent = priceOk ? `${e.currency || ''} ${e.price.toFixed(4)}` : '—';
+    tr.appendChild(tdPrice);
+
+    // Change
+    const tdChange = document.createElement('td');
+    const changeOk = e.changePct != null && typeof e.changePct === 'number' && isFinite(e.changePct);
+    if (changeOk) {
+      const up = e.changePct >= 0;
+      tdChange.className = 'wl-change ' + (up ? 'up' : 'down');
+      tdChange.textContent = `${up ? '▲' : '▼'} ${Math.abs(e.changePct).toFixed(2)}%`;
+    } else {
+      tdChange.className = 'wl-change';
+      tdChange.textContent = '—';
+    }
+    tr.appendChild(tdChange);
+
+    // Verdict
+    const tdVerdict = document.createElement('td');
+    const pill = document.createElement('span');
+    const vc = ['halal','doubtful','haram'].includes(e.vClass) ? e.vClass : '';
+    pill.className = 'verdict-pill ' + vc;
+    pill.textContent = e.verdict || '—';
+    tdVerdict.appendChild(pill);
+    tr.appendChild(tdVerdict);
+
+    // Risk
+    const tdRisk = document.createElement('td');
+    const badge = document.createElement('span');
+    const riskCls = {LOW:'badge-low',MEDIUM:'badge-medium',HIGH:'badge-high'}[e.risk] || 'badge-medium';
+    badge.className = 'badge ' + riskCls;
+    badge.textContent = e.risk || '—';
+    tdRisk.appendChild(badge);
+    tr.appendChild(tdRisk);
+
+    // Recommendation
+    const tdRec = document.createElement('td');
+    tdRec.style.fontSize = '0.75rem';
+    tdRec.style.color = 'var(--text2)';
+    tdRec.style.maxWidth = '160px';
+    tdRec.textContent = e.rec || '—';
+    tr.appendChild(tdRec);
+
+    // Actions — real listeners instead of inline onclick with concatenated data
+    const tdAct = document.createElement('td');
+    const actions = document.createElement('div');
+    actions.className = 'wl-actions';
+
+    const viewBtn = document.createElement('button');
+    viewBtn.type = 'button';
+    viewBtn.className = 'wl-btn';
+    viewBtn.textContent = 'View';
+    viewBtn.addEventListener('click', () => screenFromWatchlist(e.ticker));
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'wl-btn del';
+    delBtn.textContent = '✕';
+    delBtn.setAttribute('aria-label', `Remove ${e.ticker} from watchlist`);
+    delBtn.addEventListener('click', () => removeFromWatchlist(e.ticker));
+
+    actions.append(viewBtn, delBtn);
+    tdAct.appendChild(actions);
+    tr.appendChild(tdAct);
+
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  el.appendChild(scroll);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1398,7 +1664,7 @@ function renderSCBanner(scCheck) {
       <div class="sc-banner-icon">${c.icon}</div>
       <div class="sc-banner-text">
         <div class="sc-banner-title">${c.title}</div>
-        <div class="sc-banner-note">${scCheck.note || ''}</div>
+        <div class="sc-banner-note">${esc(scCheck.note)}</div>
       </div>
       <a class="sc-link" href="https://www.sc.com.my/development/islamic-capital-market/shariah-compliant-securities"
          target="_blank" rel="noopener">Official SC List →</a>
@@ -1408,14 +1674,15 @@ function renderSCBanner(scCheck) {
 /* ══════════════════════════════════════════════════════════
    CACHE INDICATOR
 ══════════════════════════════════════════════════════════ */
-function renderCacheIndicator(cached) {
+function renderCacheIndicator() {
+  // Only called when the response was actually served from cache.
   const el = document.getElementById('cTime');
   if (!el) return;
-  const cacheTag = cached
-    ? ' <span class="cache-badge">⚡ Cached</span>'
-    : '';
-  // cTime is already set by renderResult — append tag
-  el.innerHTML = el.textContent + cacheTag;
+  const badge = document.createElement('span');
+  badge.className = 'cache-badge';
+  badge.style.marginLeft = '6px';
+  badge.textContent = '⚡ Cached';
+  el.appendChild(badge);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1448,9 +1715,11 @@ async function runPurify() {
     if (!json.ok) throw new Error(json.error);
     const d = json.data;
 
-    document.getElementById('purifyTotal').textContent  = `${d.currency} ${d.dividend.toFixed(2)}`;
-    document.getElementById('purifyDonate').textContent = `${d.currency} ${d.purifyAmount.toFixed(2)}`;
-    document.getElementById('purifyKeep').textContent   = `${d.currency} ${d.keepAmount.toFixed(2)}`;
+    const pccy = d.currency || ccy;
+    const money = v => (v == null || isNaN(v)) ? 'N/A' : `${pccy} ${Number(v).toFixed(2)}`;
+    document.getElementById('purifyTotal').textContent  = money(d.dividend);
+    document.getElementById('purifyDonate').textContent = money(d.purifyAmount);
+    document.getElementById('purifyKeep').textContent   = money(d.keepAmount);
     document.getElementById('purifyNote').textContent   = d.note;
     document.getElementById('purifyResult').classList.add('visible');
   } catch(e) {
@@ -1484,7 +1753,7 @@ function showPanel(id) {
   if (id === 'watchlist') renderWatchlist();
   if (id === 'brokers')   renderBrokers();
   if (id === 'howto')     renderSteps();
-  window.scrollTo({top:0, behavior:'smooth'});
+  window.scrollTo({top:0, behavior:motionBehavior()});
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1493,6 +1762,9 @@ function showPanel(id) {
 function showToast(msg, type='') {
   const t = document.getElementById('toast');
   t.textContent = msg;
+  // Errors interrupt (assertive); progress/success wait their turn (polite).
+  t.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+  t.setAttribute('role', type === 'error' ? 'alert' : 'status');
   t.className = `toast ${type} show`;
   setTimeout(() => t.className = 'toast', 3000);
 }
