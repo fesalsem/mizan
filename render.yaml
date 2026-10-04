@@ -8,5 +8,15 @@ services:
     startCommand: gunicorn server:app --workers 2 --threads 2 --timeout 60
 
     envVars:
+      # Required. server.py calls check_setup() at import time and calls
+      # sys.exit when the key is missing, so the service exits immediately on
+      # start without it. sync: false makes Render prompt for the value at
+      # deploy time rather than storing it in this committed file.
+      - key: TIINGO_API_KEY
+        sync: false
+
+      # Render honors PYTHON_VERSION here; it takes precedence over runtime.txt.
+      # runtime.txt pins the same version for other tooling, so keep the two in
+      # sync if either is changed.
       - key: PYTHON_VERSION
         value: 3.11.9
