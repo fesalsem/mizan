@@ -9,7 +9,7 @@ Data sources:
 Requires environment variable: TIINGO_API_KEY
 Get a free key at: https://api.tiingo.com (instant signup)
 """
-import json, math, time, threading, re
+import json, math, time, threading, re, hmac
 from flask import Flask, request, jsonify, send_from_directory
 from pathlib import Path
 import os, sys, importlib.util
@@ -28,25 +28,47 @@ def check_setup():
     if not TIINGO_KEY:
         print("\n[ERROR] TIINGO_API_KEY environment variable not set.")
         print("  Get a free key at: https://api.tiingo.com")
-        print("  Then in Render: Environment → TIINGO_API_KEY = your_key\n")
+        print("  Set it in the environment: Render dashboard, docker -e, or the")
+        print("  Lambda function's configuration.\n")
         sys.exit(1)
-    print("  ✓  Tiingo API key loaded")
+    # ASCII only. A Windows console defaults to cp1252, and a non-ASCII tick
+    # here raises UnicodeEncodeError before the server has even started.
+    print("  [ok] Tiingo API key loaded")
 
 check_setup()
 
 # ── Cache (30 min TTL) ────────────────────────────────────
 CACHE: dict = {}
 CACHE_TTL   = 1800
+# /screen accepts any well-formed symbol, so the key space is caller-controlled.
+# With no ceiling, a scripted loop over random symbols grows this dict forever.
+# Expired entries are dropped first; if that is not enough, the entries closest
+# to expiry go, so a burst of junk symbols cannot evict the popular ones.
+CACHE_MAX   = 512
 _cache_lock = threading.Lock()
+
+def _cache_make_room_locked(now: float) -> None:
+    """Drop expired entries, then the oldest, until there is room for one more."""
+    for k in [k for k, e in CACHE.items() if now >= e["expires_at"]]:
+        CACHE.pop(k, None)
+    while len(CACHE) >= CACHE_MAX:
+        CACHE.pop(min(CACHE, key=lambda k: CACHE[k]["expires_at"]), None)
 
 def cache_get(key):
     with _cache_lock:
         e = CACHE.get(key)
-        return e["data"] if e and time.time() < e["expires_at"] else None
+        if e and time.time() < e["expires_at"]:
+            return e["data"]
+        if e:
+            CACHE.pop(key, None)   # expired: reclaim now, not on the next set
+        return None
 
 def cache_set(key, data):
     with _cache_lock:
-        CACHE[key] = {"data": data, "expires_at": time.time() + CACHE_TTL}
+        now = time.time()
+        if len(CACHE) >= CACHE_MAX:
+            _cache_make_room_locked(now)
+        CACHE[key] = {"data": data, "expires_at": now + CACHE_TTL}
 
 def cache_clear(key=None):
     with _cache_lock:
@@ -57,9 +79,14 @@ def cache_stats():
     with _cache_lock:
         now  = time.time()
         live = sum(1 for e in CACHE.values() if now < e["expires_at"])
-        return {"cached": live, "total": len(CACHE), "ttl_seconds": CACHE_TTL}
+        return {"cached": live, "total": len(CACHE),
+                "max": CACHE_MAX, "ttl_seconds": CACHE_TTL}
 
 # ── Request counter ───────────────────────────────────────
+# In-process only. Gunicorn runs 2 workers and Lambda runs one process per
+# container, so each instance keeps its own tally: the figure reported here is
+# per worker, not the account total. It is a rough guard against a runaway loop
+# in one process, not an accurate quota meter. See README for the real limits.
 _req_lock       = threading.Lock()
 _req_count      = 0
 _req_day        = time.strftime("%Y-%m-%d")
@@ -476,40 +503,24 @@ BURSA_DB = {
     },
 }
 
-# Name → code lookup for text search
-BURSA_NAME_INDEX = {
-    v["name"].lower(): k for k, v in BURSA_DB.items()
-}
-# Also index by partial name
-BURSA_PARTIAL_INDEX = {
-    v["name"].lower().split()[0]: k for k, v in BURSA_DB.items()
-}
-
 def bursa_lookup(symbol: str) -> dict | None:
-    """Look up a Bursa stock in the hardcoded database."""
+    """Look up a Bursa stock by its 4-digit code."""
     s = symbol.upper().strip().replace(".KL", "")
-    if s.isdigit():
-        code = s.zfill(4)
-        return BURSA_DB.get(code)
-    # Try name search
-    sl = symbol.lower().strip()
-    for name, code in BURSA_NAME_INDEX.items():
-        if sl in name or name in sl:
-            return BURSA_DB.get(code)
-    for name, code in BURSA_PARTIAL_INDEX.items():
-        if sl.startswith(name[:4]) or name.startswith(sl[:4]):
-            return BURSA_DB.get(code)
-    return None
+    if not s.isdigit():
+        return None
+    return BURSA_DB.get(s.zfill(4))
 
 def get_bursa_code(symbol: str) -> str | None:
+    """Return the 4-digit Bursa code for a symbol, or None if it is not numeric."""
     s = symbol.upper().strip().replace(".KL", "")
-    if s.isdigit():
-        return s.zfill(4)
-    sl = symbol.lower().strip()
-    for name, code in BURSA_NAME_INDEX.items():
-        if sl in name:
-            return code
-    return None
+    return s.zfill(4) if s.isdigit() else None
+
+# Note: name-based lookup was removed here. It was unreachable, because
+# is_bursa() gates this path on the symbol being all digits, so a name such as
+# "maybank" was always routed to the US provider and failed there. The partial
+# index also collided silently: 28 first-words for 31 companies, so three stocks
+# were unsearchable even if the path had been reachable. Searching by name is a
+# feature worth adding deliberately, not one to leave half-built.
 
 # ── SC Malaysia Shariah List ──────────────────────────────
 _sc_list: dict = {}
@@ -573,6 +584,35 @@ DOUBTFUL_SECTORS = [
     "food & beverage","beverages","hospitality","hotel","hotels","restaurants",
 ]
 
+# Explicit, reviewed classifications for database entries. These take priority
+# over keyword matching, because a keyword scan over prose is not a reliable way
+# to decide what a company's business actually is. JPMorgan and Bank of America
+# are here because neither "Financial Services" nor "Banks - Diversified"
+# contains a phrase the keyword list recognises, so without a flag the riba
+# exclusion depended on a substring coincidence in the free-text note.
+HARAM_FLAGS = {
+    "conventional_banking": "Core business is conventional interest-based banking (riba).",
+    "gambling":             "Core business is gambling (maysir).",
+    "alcohol":              "Core business is the production or sale of alcohol (khamr).",
+    "tobacco":              "Core business is the manufacture or sale of tobacco products.",
+    "weapons":              "Core business is the manufacture of weapons or munitions.",
+    "adult_entertainment":  "Core business is adult entertainment.",
+    "pork":                 "Core business involves pork or swine.",
+    "conventional_insurance": "Core business is conventional insurance underwriting (gharar).",
+}
+
+# Sectors where the DJIM non-permissible-income test is applied by the regulator
+# using its own method, so this app cannot compute it and must not report a gap
+# as a warning against the company.
+FINANCIAL_SECTORS = [
+    "bank", "financial services", "credit services", "capital markets",
+    "insurance", "diversified financial",
+]
+
+def is_financial(sector: str, industry: str) -> bool:
+    s = f"{sector} {industry}".lower()
+    return any(k in s for k in FINANCIAL_SECTORS)
+
 US_KNOWN = {
     "AAPL","MSFT","GOOGL","GOOG","AMZN","TSLA","NVDA","META","NFLX","AMD",
     "INTC","QCOM","AVGO","TXN","MU","AMAT","JPM","BAC","GS","MS","WFC",
@@ -581,13 +621,29 @@ US_KNOWN = {
     "AMGN","GILD","BMY","COP","SLB","T","VZ","TMUS","CMCSA","NFLX",
 }
 
+def _is_missing(v) -> bool:
+    """True for the values our upstream sources use to mean 'no value'."""
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return v.strip() in ("", "None", "N/A", "-", "nan")
+    if isinstance(v, float):
+        return math.isnan(v)
+    return False
+
+# 0 is deliberately not a missing-value marker. Zero debt, zero dividend and
+# zero volume are real numbers. Treating them as missing turned a true zero into
+# "N/A" and, worse, fed the screening engine an unknown, which used to score as
+# safe rather than unverified.
 def safe_float(v, d=None):
-    try:    return float(v) if v not in (None,"","None","N/A","-",0,"0") else d
-    except: return d
+    if _is_missing(v): return d
+    try:    return float(v)
+    except (TypeError, ValueError): return d
 
 def safe_int(v, d=None):
-    try:    return int(float(v)) if v not in (None,"","None","N/A","-") else d
-    except: return d
+    if _is_missing(v): return d
+    try:    return int(float(v))
+    except (TypeError, ValueError): return d
 
 def normalise_ticker(symbol: str) -> str:
     s = symbol.upper().strip().replace(" ","")
@@ -712,7 +768,8 @@ US_DB = {
         "total_assets": 3_875_393_000_000, "total_debt": None,
         "total_revenue": 162_395_000_000, "interest_expense": None,
         "description": "JPMorgan Chase is a global financial services firm. Core business is interest-based banking (riba).",
-        "note": "Conventional banking operations involve riba — not halal.",
+        "note": "Conventional banking operations involve riba, which is not permissible.",
+        "haramFlags": ["conventional_banking"],
     },
     "BAC": {
         "name": "Bank of America Corporation", "sector": "Financial Services",
@@ -723,7 +780,8 @@ US_DB = {
         "total_assets": 3_318_340_000_000, "total_debt": None,
         "total_revenue": 101_912_000_000, "interest_expense": None,
         "description": "Bank of America provides banking, investment, and financial services. Core business is interest-based.",
-        "note": "Conventional banking operations involve riba — not halal.",
+        "note": "Conventional banking operations involve riba, which is not permissible.",
+        "haramFlags": ["conventional_banking"],
     },
     "XOM": {
         "name": "Exxon Mobil Corporation", "sector": "Energy",
@@ -848,12 +906,15 @@ def fetch_us_db_stock(ticker: str) -> dict:
     dr = db.get("debt_ratio")
     ir = db.get("interest_ratio")
     sc_check  = check_sc_list(ticker)
+    # The description is still passed for display, but screen_halal no longer
+    # scans it for prohibited-business keywords, only the sector, industry and
+    # company name. See the note in the business-activity check.
     screening = screen_halal(
         name=db["name"], sector=db["sector"], industry=db["industry"],
         description=db.get("description","") + " " + db.get("note",""),
         debt_ratio=dr, interest_ratio=ir,
         pe_ratio=db.get("pe"), profit_margin=db.get("profit_margin"),
-        sc_check=sc_check,
+        sc_check=sc_check, flags=db.get("haramFlags"),
     )
 
     return {
@@ -887,10 +948,22 @@ def fetch_us_db_stock(ticker: str) -> dict:
         "fetchedAt": time.strftime("%H:%M:%S"),
         "_cached": False, "_source": "US DB (SEC FY2023/2024) + Tiingo live price",
         "_dataNote": "Financial ratios from SEC public filings (FY2023/2024). Price fetched live where available.",
+        "dataAsOf":  "live price where available; financials from FY2024 filings",
     }
 
+class UpstreamError(RuntimeError):
+    """A provider failure that is not the caller's fault, mapped to HTTP 5xx."""
+
+
 def tiingo_get(path: str, params: dict = None) -> any:
-    """Make a Tiingo API request."""
+    """
+    Make a Tiingo API request.
+
+    Returns None for "this provider does not know the ticker", which callers
+    treat as a fallback signal. Raises UpstreamError for anything that is the
+    provider's problem, so the route can answer 502/503 rather than blaming the
+    client with a 400, and so a raw exception string never reaches the browser.
+    """
     used = req_increment()
     url  = f"{TIINGO_BASE}/{path}"
     headers = {
@@ -899,37 +972,65 @@ def tiingo_get(path: str, params: dict = None) -> any:
     }
     print(f"  Tiingo #{used}: /{path.split('?')[0]}")
     try:
-        resp = requests.get(url, params=params or {}, headers=headers, timeout=15)
+        # 10s, not 15s. A single screen can make several of these in series and
+        # the gunicorn worker is killed at 25s, so the old budget let one slow
+        # provider response consume the whole request before any of it rendered.
+        resp = requests.get(url, params=params or {}, headers=headers, timeout=10)
+        if resp.status_code in (400, 404):
+            return None   # ticker not carried on this plan; caller falls back
         if resp.status_code == 401:
-            raise ValueError("Invalid Tiingo API key. Check TIINGO_API_KEY in Render environment.")
-        if resp.status_code == 404:
-            return None
-        if resp.status_code == 400:
-            return None   # Ticker not on Tiingo free tier — caller handles fallback
+            raise UpstreamError("The data provider rejected the configured API key.")
         if resp.status_code == 429:
-            raise ValueError("Tiingo rate limit hit. Please wait a moment and try again.")
+            raise UpstreamError("The data provider's rate limit was reached. Try again shortly.")
+        if resp.status_code >= 500:
+            raise UpstreamError(f"The data provider returned an error ({resp.status_code}).")
         if not resp.ok:
-            raise ValueError(f"Tiingo API error {resp.status_code}")
+            raise UpstreamError(f"The data provider returned an unexpected status ({resp.status_code}).")
         return resp.json()
     except requests.Timeout:
-        raise ValueError("Tiingo request timed out. Please try again.")
-    except requests.RequestException as e:
-        raise ValueError(f"Network error: {e}")
+        raise UpstreamError("The data provider did not respond in time.")
+    except requests.RequestException:
+        raise UpstreamError("The data provider could not be reached.")
 
+
+# Tiingo's free plan does not serve the fundamentals endpoints usefully: they
+# come back empty, and every attempt still counts against the daily budget.
+# Probe once, then stop asking until the process restarts, so a plan upgrade
+# still gets picked up on the next deploy.
+_fund_lock       = threading.Lock()
+_fund_state      = {"available": True, "misses": 0}
+
+def fundamentals_available() -> bool:
+    with _fund_lock:
+        return _fund_state["available"]
+
+def note_fundamentals_result(got_data: bool) -> None:
+    with _fund_lock:
+        if got_data:
+            _fund_state["available"] = True
+            _fund_state["misses"]    = 0
+        else:
+            _fund_state["misses"] += 1
+            if _fund_state["misses"] >= 3:
+                _fund_state["available"] = False
+                print("  Fundamentals endpoints returned nothing 3 times; "
+                      "skipping them for this process.")
 
 def fetch_us_stock(ticker: str) -> dict:
     """
-    Fetch US/international stock data.
-    Tries Tiingo first; falls back to US built-in database if Tiingo
-    returns 400 (ticker not on free plan).
-    """
+    Fetch US/international stock data from Tiingo.
 
+    The request budget drives the shape of this function. The free plan allows
+    1000 calls a day and every screen used to cost six of them, so about 160
+    distinct tickers exhausted it. It now costs two when the fundamentals
+    endpoints do not answer (metadata, plus one price series that supplies the
+    quote, the 52-week range and the chart) and four when they do.
+    """
     # 1. Metadata (name, description, exchange)
     meta = tiingo_get(f"tiingo/daily/{ticker}")
     if not meta:
-        # Tiingo doesn't carry this ticker on free tier — try built-in DB
         if ticker in US_DB:
-            print(f"  → Tiingo unavailable for {ticker}, using US_DB")
+            print(f"  -> Tiingo has no metadata for {ticker}, using the built-in record")
             return fetch_us_db_stock(ticker)
         raise ValueError(
             f"Ticker '{ticker}' not found. "
@@ -941,60 +1042,84 @@ def fetch_us_stock(ticker: str) -> dict:
     description = (meta.get("description") or "")[:400]
     exchange    = meta.get("exchangeCode") or "N/A"
 
-    # 2. Latest price data
-    prices = tiingo_get(f"tiingo/daily/{ticker}/prices",
-                        {"startDate": "2024-01-01", "sort": "-date", "limit": 1})
-    price_data = prices[0] if prices else {}
+    # 2. One daily series covering the year. This replaces three calls that each
+    #    fetched part of the same thing: a one-row quote, a legacy IEX quote and
+    #    a separate six-month series for the chart. It also corrects two wrong
+    #    figures:
+    #      - the previous close used to be the same day's adjusted close, so the
+    #        "daily change" was a dividend artefact rather than a daily move;
+    #      - "week52High"/"week52Low" were the latest day's high and low. On
+    #        META those sat 1.8% apart, which no genuine 52-week range does.
+    from datetime import datetime, timedelta
+    start  = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    series = tiingo_get(f"tiingo/daily/{ticker}/prices",
+                        {"startDate": start, "sort": "date"})
 
-    price      = safe_float(price_data.get("close"),        0)
-    prev_close = safe_float(price_data.get("adjClose"),     price)
-    high       = safe_float(price_data.get("high"),         price)
-    low        = safe_float(price_data.get("low"),          price)
-    volume     = safe_int(price_data.get("volume"),         0)
-    change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
+    bars = []
+    if series and isinstance(series, list):
+        for row in series:
+            cl = safe_float(row.get("close"))
+            if cl is None:
+                continue
+            bars.append({
+                "date":   (row.get("date") or "")[:10],
+                "close":  cl,
+                "high":   safe_float(row.get("high"), cl),
+                "low":    safe_float(row.get("low"),  cl),
+                "volume": safe_int(row.get("volume"), 0),
+            })
 
-    # 3. Real-time IEX quote (more accurate price)
-    iex = tiingo_get(f"iex/{ticker}")
-    if iex and isinstance(iex, list) and iex:
-        q          = iex[0]
-        price      = safe_float(q.get("last") or q.get("tngoLast"), price)
-        volume     = safe_int(q.get("volume"), volume)
-        prev_close = safe_float(q.get("prevClose"), prev_close)
-        change_pct = ((price - prev_close) / prev_close * 100) if prev_close else change_pct
+    if not bars:
+        raise ValueError(f"No price history returned for '{ticker}'.")
 
-    # 4. Fundamentals (income statement + balance sheet)
-    # Tiingo fundamentals are available on free tier
-    fund_data = tiingo_get(f"tiingo/fundamentals/{ticker}/statements",
-                           {"frequency": "annual", "limit": 1})
+    price       = bars[-1]["close"]
+    prev_close  = bars[-2]["close"] if len(bars) >= 2 else None
+    change_pct  = (((price - prev_close) / prev_close * 100)
+                   if price and prev_close else None)
+    volume      = bars[-1]["volume"]
+    avg_volume  = int(sum(b["volume"] for b in bars) / len(bars))
+    week52_high = max(b["high"] for b in bars)
+    week52_low  = min(b["low"]  for b in bars)
 
-    income_stmt = {}; balance_sheet = {}
-    if fund_data and isinstance(fund_data, list) and fund_data:
-        stmts = fund_data[0].get("statementData", {})
-        # Find income statement
-        for stmt in stmts.get("incomeStatement", [{}]):
-            if stmt.get("dataCode") == "revenue":
-                income_stmt["revenue"] = stmt.get("value")
-            if stmt.get("dataCode") == "intExp":
-                income_stmt["intExp"] = stmt.get("value")
-            if stmt.get("dataCode") == "grossProfit":
-                income_stmt["grossProfit"] = stmt.get("value")
-            if stmt.get("dataCode") == "netMargin":
-                income_stmt["netMargin"] = stmt.get("value")
-        # Find balance sheet
-        for stmt in stmts.get("balanceSheet", [{}]):
-            if stmt.get("dataCode") == "totalAssets":
-                balance_sheet["totalAssets"] = stmt.get("value")
-            if stmt.get("dataCode") == "totalDebt":
-                balance_sheet["totalDebt"] = stmt.get("value")
-            if stmt.get("dataCode") == "currentRatio":
-                balance_sheet["currentRatio"] = stmt.get("value")
+    # Month-end closes from the same series, last six months.
+    monthly = {}
+    for b in bars:
+        monthly[b["date"][:7]] = b
+    history = [{
+        "date":   k,
+        "close":  round(b["close"], 3),
+        "open":   round(b["close"], 3),
+        "high":   round(b["high"], 3),
+        "low":    round(b["low"], 3),
+        "volume": b["volume"],
+    } for k, b in sorted(monthly.items())][-6:]
 
-    # 5. Key metrics from Tiingo overview
-    overview = tiingo_get(f"tiingo/fundamentals/{ticker}/daily",
-                          {"limit": 1})
-    metrics = {}
-    if overview and isinstance(overview, list) and overview:
-        metrics = overview[0]
+    # 3. Fundamentals (income statement, balance sheet, key metrics)
+    income_stmt = {}; balance_sheet = {}; metrics = {}
+    if fundamentals_available():
+        fund_data = tiingo_get(f"tiingo/fundamentals/{ticker}/statements",
+                               {"frequency": "annual", "limit": 1})
+        overview  = tiingo_get(f"tiingo/fundamentals/{ticker}/daily",
+                               {"limit": 1})
+
+        if fund_data and isinstance(fund_data, list) and fund_data:
+            stmts = fund_data[0].get("statementData", {})
+            for stmt in stmts.get("incomeStatement", [{}]):
+                code = stmt.get("dataCode")
+                if code == "revenue":     income_stmt["revenue"]     = stmt.get("value")
+                if code == "intExp":      income_stmt["intExp"]      = stmt.get("value")
+                if code == "grossProfit": income_stmt["grossProfit"] = stmt.get("value")
+                if code == "netMargin":   income_stmt["netMargin"]   = stmt.get("value")
+            for stmt in stmts.get("balanceSheet", [{}]):
+                code = stmt.get("dataCode")
+                if code == "totalAssets":  balance_sheet["totalAssets"]  = stmt.get("value")
+                if code == "totalDebt":    balance_sheet["totalDebt"]    = stmt.get("value")
+                if code == "currentRatio": balance_sheet["currentRatio"] = stmt.get("value")
+
+        if overview and isinstance(overview, list) and overview:
+            metrics = overview[0]
+
+        note_fundamentals_result(bool(income_stmt or balance_sheet or metrics))
 
     total_revenue  = safe_float(income_stmt.get("revenue"))
     int_expense    = safe_float(income_stmt.get("intExp"))
@@ -1017,46 +1142,50 @@ def fetch_us_stock(ticker: str) -> dict:
                       if total_revenue and int_expense is not None and total_revenue > 0
                       else None)
 
-    # 6. Price history (6 months)
-    history = []
-    try:
-        from datetime import datetime, timedelta
-        six_months_ago = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
-        hist_data = tiingo_get(f"tiingo/daily/{ticker}/prices",
-                               {"startDate": six_months_ago,
-                                "resampleFreq": "monthly", "sort": "date"})
-        if hist_data:
-            for row in hist_data[-6:]:
-                history.append({
-                    "date":   row.get("date","")[:7],
-                    "close":  safe_float(row.get("adjClose") or row.get("close"), 0),
-                    "open":   safe_float(row.get("open"),  0),
-                    "high":   safe_float(row.get("high"),  0),
-                    "low":    safe_float(row.get("low"),   0),
-                    "volume": safe_int(row.get("volume"),  0),
-                })
-    except Exception as e:
-        print(f"  History fetch failed (non-critical): {e}")
+    # 4. Fall back to the built-in filings record where one exists. Live figures
+    #    still win. Without this, every US stock screened as Doubtful on every
+    #    request, for every ticker, purely because two inputs were missing from
+    #    a source that was never going to supply them.
+    db_entry  = US_DB.get(ticker)
+    sector, industry = "N/A", "N/A"
+    if db_entry:
+        sector   = db_entry["sector"]
+        industry = db_entry["industry"]
+        if debt_ratio     is None: debt_ratio     = db_entry.get("debt_ratio")
+        if interest_ratio is None: interest_ratio = db_entry.get("interest_ratio")
+        if pe_ratio       is None: pe_ratio       = db_entry.get("pe")
+        if pb_ratio       is None: pb_ratio       = db_entry.get("pb")
+        if profit_margin  is None: profit_margin  = db_entry.get("profit_margin")
+        if roe            is None: roe            = db_entry.get("roe")
+        if div_yield      is None: div_yield      = db_entry.get("dividend_yield")
+        if market_cap     is None: market_cap     = db_entry.get("market_cap")
+        if total_assets   is None: total_assets   = db_entry.get("total_assets")
+        if total_debt     is None: total_debt     = db_entry.get("total_debt")
+        if total_revenue  is None: total_revenue  = db_entry.get("total_revenue")
+        if int_expense    is None: int_expense    = db_entry.get("interest_expense")
+
+    from_db_filings = bool(db_entry) and not (income_stmt or balance_sheet or metrics)
 
     sc_check  = check_sc_list(ticker)
     screening = screen_halal(
-        name=name, sector="N/A", industry="N/A",
+        name=name, sector=sector, industry=industry,
         description=description,
         debt_ratio=debt_ratio, interest_ratio=interest_ratio,
         pe_ratio=pe_ratio, profit_margin=profit_margin,
         sc_check=sc_check,
+        flags=db_entry.get("haramFlags") if db_entry else None,
     )
 
     return {
         "ticker": ticker, "name": name,
-        "sector": "N/A", "industry": "N/A",
+        "sector": sector, "industry": industry,
         "description": description, "exchange": exchange, "currency": "USD",
-        "price":       round(price, 4),
-        "prevClose":   round(prev_close, 4) if prev_close else None,
-        "changePct":   round(change_pct, 3),
-        "week52High":  round(high, 4) if high else None,
-        "week52Low":   round(low, 4)  if low  else None,
-        "volume":      volume, "avgVolume": volume, "marketCap": safe_int(market_cap),
+        "price":       round(price, 4) if price is not None else None,
+        "prevClose":   round(prev_close, 4) if prev_close is not None else None,
+        "changePct":   round(change_pct, 3) if change_pct is not None else None,
+        "week52High":  round(week52_high, 4),
+        "week52Low":   round(week52_low, 4),
+        "volume":      volume, "avgVolume": avg_volume, "marketCap": safe_int(market_cap),
         "beta":        None,
         "totalAssets":    safe_int(total_assets),
         "totalDebt":      safe_int(total_debt),
@@ -1079,7 +1208,15 @@ def fetch_us_stock(ticker: str) -> dict:
         "screening": screening,
         "fetchedAt": time.strftime("%H:%M:%S"),
         "_cached":   False,
-        "_source":   "Tiingo API",
+        "_source":   ("Tiingo API + built-in FY2023/2024 filings"
+                      if from_db_filings else "Tiingo API"),
+        "_dataNote": ("Price and chart are live from Tiingo. Fundamentals come from the "
+                      "built-in filings record because the provider did not supply them."
+                      if from_db_filings else
+                      "Price and chart are live from Tiingo."),
+        "dataAsOf":  ("live price; financials from FY2024 filings"
+                      if from_db_filings else
+                      "live price and provider fundamentals"),
     }
 
 # ══════════════════════════════════════════════════════════
@@ -1092,16 +1229,31 @@ BURSA_LIVE_HEADERS = {
                   "Chrome/120.0 Safari/537.36",
 }
 
+BURSA_HISTORY_MONTHS = 6
+
 def fetch_bursa_live(code: str) -> dict | None:
     """
     Fetch a live Bursa Malaysia quote from Yahoo Finance's chart API.
     Quotes are ~15 minutes delayed (Bursa has no free real-time feed).
     Returns None on any failure so the caller can fall back to the DB.
+
+    One call, daily bars, for two reasons.
+
+    The daily change needs a previous close. Yahoo leaves meta.previousClose
+    empty on this endpoint, and meta.chartPreviousClose is the close before the
+    START of the requested range, which is roughly six months back at range=6mo.
+    Reading that as yesterday's close reported Tenaga's six-month drift of
+    -7.4% as a single day's fall. The second-to-last bar gives the real previous
+    close, which for the same stock on the same data is +0.5%.
+
+    The chart is then bucketed to month-end closes from that same daily series,
+    so the quote and the chart cannot disagree. Asking Yahoo for interval=1mo
+    directly returned the current price repeated across the recent months.
     """
     if not code:
         return None
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.KL"
-    params = {"range": "6mo", "interval": "1mo"}
+    params = {"range": "6mo", "interval": "1d"}
 
     for attempt in range(2):
         try:
@@ -1114,39 +1266,58 @@ def fetch_bursa_live(code: str) -> dict | None:
             result = (data.get("chart", {}).get("result") or [None])[0]
             if not result:
                 return None
-            meta = result.get("meta", {})
-            price  = safe_float(meta.get("regularMarketPrice"))
-            prev   = safe_float(meta.get("chartPreviousClose")
-                                or meta.get("previousClose"))
+
+            meta   = result.get("meta", {})
+            ts     = result.get("timestamp") or []
+            q      = (result.get("indicators", {}).get("quote") or [{}])[0]
+            closes = q.get("close")  or []
+            highs  = q.get("high")   or []
+            lows   = q.get("low")    or []
+            vols   = q.get("volume") or []
+
+            from datetime import datetime, timezone
+            bars = []
+            for i, t in enumerate(ts):
+                cl = closes[i] if i < len(closes) else None
+                if cl is None:
+                    continue
+                bars.append({
+                    "date":   datetime.fromtimestamp(t, tz=timezone.utc).date(),
+                    "close":  cl,
+                    "high":   highs[i] if i < len(highs) else cl,
+                    "low":    lows[i]  if i < len(lows)  else cl,
+                    "volume": safe_int(vols[i], 0) if i < len(vols) else 0,
+                })
+            if not bars:
+                return None
+
+            price = safe_float(meta.get("regularMarketPrice"), bars[-1]["close"])
+            # Second-to-last bar. Correct whether the final bar is a finished
+            # session or today's still-forming one.
+            prev  = bars[-2]["close"] if len(bars) >= 2 else None
             change_pct = (((price - prev) / prev * 100)
                           if price and prev else None)
-            volume = safe_int(meta.get("regularMarketVolume"))
+            volume = safe_int(meta.get("regularMarketVolume"), bars[-1]["volume"])
             wk_hi  = safe_float(meta.get("fiftyTwoWeekHigh"))
             wk_lo  = safe_float(meta.get("fiftyTwoWeekLow"))
 
-            history = []
-            ts   = result.get("timestamp") or []
-            q    = (result.get("indicators", {}).get("quote") or [{}])[0]
-            closes = q.get("close") or []
-            if ts and closes:
-                from datetime import datetime, timezone
-                for t, cl in zip(ts, closes):
-                    if cl is None:
-                        continue
-                    dt = datetime.fromtimestamp(t, tz=timezone.utc)
-                    history.append({
-                        "date":   dt.strftime("%Y-%m"),
-                        "close":  round(cl, 3),
-                        "open":   round(cl, 3),
-                        "high":   round(cl, 3),
-                        "low":    round(cl, 3),
-                        "volume": 0,
-                    })
+            # Month-end closes, oldest first.
+            monthly = {}
+            for b in bars:
+                monthly[(b["date"].year, b["date"].month)] = b
+            history = [{
+                "date":   f"{y:04d}-{mo:02d}",
+                "close":  round(b["close"], 3),
+                "open":   round(b["close"], 3),
+                "high":   round(b["high"], 3),
+                "low":    round(b["low"], 3),
+                "volume": b["volume"],
+            } for (y, mo), b in sorted(monthly.items())][-BURSA_HISTORY_MONTHS:]
 
             return {
                 "price":      round(price, 4)  if price is not None else None,
                 "prevClose":  round(prev, 4)   if prev  is not None else None,
-                "changePct":  round(change_pct, 3) if change_pct is not None else 0,
+                "changePct":  round(change_pct, 3) if change_pct is not None else None,
                 "week52High": round(wk_hi, 4)  if wk_hi is not None else None,
                 "week52Low":  round(wk_lo, 4)  if wk_lo is not None else None,
                 "volume":     volume,
@@ -1198,17 +1369,19 @@ def fetch_bursa_stock(symbol: str) -> dict:
         description=db.get("description",""),
         debt_ratio=debt_ratio, interest_ratio=interest_ratio,
         pe_ratio=pe_ratio, profit_margin=profit_margin,
-        sc_check=sc_check,
+        sc_check=sc_check, flags=db.get("haramFlags"),
     )
 
-    # Live price overlay (Yahoo Finance, ~15 min delayed) — fall back to DB
+    # Live price overlay (Yahoo Finance, ~15 min delayed), falling back to the
+    # database. The old fallback was week52High * 0.85, which put a number that
+    # nothing had ever observed into the price field. A missing quote now
+    # reports as missing so the UI can say so.
     live = fetch_bursa_live(code)
     is_live = live is not None
 
-    price      = (live["price"] if is_live and live["price"] is not None
-                  else db.get("week52High", 0) * 0.85)
+    price      = live["price"]      if is_live else None
     prev_close = live["prevClose"]  if is_live else None
-    change_pct = live["changePct"]  if is_live else 0
+    change_pct = live["changePct"]  if is_live else None
     week_hi    = live["week52High"] if is_live and live["week52High"] is not None else db.get("week52High")
     week_lo    = live["week52Low"]  if is_live and live["week52Low"]  is not None else db.get("week52Low")
     volume     = live["volume"]     if is_live else None
@@ -1259,8 +1432,11 @@ def fetch_bursa_stock(symbol: str) -> dict:
         "_dataNote":  ("Price/change/volume/chart are live (15-min delayed). "
                        "Financials are from FY2023/2024 annual reports."
                        if is_live else
-                       "Live quote unavailable — price is approximate. "
+                       "Live quote unavailable, so no price is shown. "
                        "Financials are from FY2023/2024 annual reports."),
+        "dataAsOf":   ("live quote, 15 min delayed; financials from FY2024 annual report"
+                       if is_live else
+                       "no live quote available; financials from FY2024 annual report"),
     }
 
 # ══════════════════════════════════════════════════════════
@@ -1291,67 +1467,127 @@ def fetch_stock(symbol: str) -> dict:
 
 def screen_halal(name, sector, industry, description,
                  debt_ratio, interest_ratio, pe_ratio,
-                 profit_margin, sc_check=None):
-    checks=[]; issues=[]; warnings=[]
-    combined = f"{sector} {industry} {name} {description}".lower()
+                 profit_margin, sc_check=None, flags=None):
+    """
+    Run the Shariah screen and return a verdict.
 
-    if sc_check and sc_check.get("found"):
-        s = sc_check["status"]
-        if s == "compliant":
+    Two rules govern the shape of this function:
+
+    1. An authoritative source beats a heuristic. Where the SC Malaysia list
+       covers a stock it settles the business-activity question, and the sector
+       heuristics below do not get to contradict it.
+
+    2. Missing data is not the same as a clean result. An input that could not
+       be fetched is recorded as unverified and pushes risk up, because the old
+       behaviour scored a missing balance sheet as zero debt, which is the
+       safest possible score for the least verified company.
+    """
+    checks=[]; issues=[]; warnings=[]; missing=[]
+
+    sc_status        = (sc_check or {}).get("status")
+    sc_authoritative = bool((sc_check or {}).get("found")) and \
+                       sc_status in ("compliant", "non_compliant")
+
+    # ── 1. SC Malaysia official list ──────────────────────
+    if sc_authoritative:
+        if sc_status == "compliant":
             checks.append({"status":"pass","name":"SC Malaysia Official Shariah List",
                 "detail":f"✓ Listed as Shariah-compliant by SC Malaysia. {sc_check.get('note','')}"})
-        elif s == "non_compliant":
+        else:
             checks.append({"status":"fail","name":"SC Malaysia Official Shariah List",
                 "detail":f"✗ Listed as non-Shariah-compliant by SC Malaysia. {sc_check.get('note','')}"})
             issues.append("sc_non_compliant")
-    elif sc_check and sc_check.get("status") == "not_applicable":
-        pass
+    elif sc_status == "not_applicable":
+        checks.append({"status":"n/a","name":"SC Malaysia Official Shariah List",
+            "detail":"The SC Malaysia list covers Bursa Malaysia listings only. This stock is screened on the criteria below."})
     else:
         checks.append({"status":"warn","name":"SC Malaysia Official Shariah List",
             "detail":"Not found in built-in SC list. Verify manually at sc.com.my"})
         warnings.append("sc_not_found")
 
-    hkw = next((kw for kw in HARAM_KEYWORDS if kw in combined), None)
-    if hkw:
-        checks.append({"status":"fail","name":"Business Activity / Industry",
-            "detail":f'Keyword "{hkw}" detected. Core business involves a prohibited activity.'})
-        issues.append("haram_industry")
-    else:
-        ds = next((d for d in DOUBTFUL_SECTORS if d in combined), None)
-        if ds:
-            checks.append({"status":"warn","name":"Business Activity / Industry",
-                "detail":f'Sector "{sector}" may have mixed income sources. Requires verification.'})
-            warnings.append("doubtful_sector")
-        else:
-            checks.append({"status":"pass","name":"Business Activity / Industry",
-                "detail":f'Sector ({sector}) / Industry ({industry}) — no prohibited activity detected.'})
+    # ── 2. Business activity ──────────────────────────────
+    # An explicit flag on the database entry wins. Otherwise scan the structured
+    # fields and the company name, never the free-text description: scanning
+    # prose flagged Walmart as "Not Halal" because its blurb mentions that some
+    # stores sell alcohol, which is not the same claim as alcohol being the
+    # core business.
+    combined    = f"{sector} {industry} {name}".lower()
+    has_sector  = bool(sector and sector.strip().upper() not in ("N/A", "NA", "NONE", ""))
+    flag        = next((f for f in (flags or []) if f in HARAM_FLAGS), None)
+    hkw         = next((kw for kw in HARAM_KEYWORDS if kw in combined), None)
 
+    if flag:
+        checks.append({"status":"fail","name":"Business Activity / Industry",
+            "detail":HARAM_FLAGS[flag]})
+        issues.append("haram_industry")
+    elif hkw:
+        checks.append({"status":"fail","name":"Business Activity / Industry",
+            "detail":f'Keyword "{hkw}" found in the sector, industry or company name. Core business involves a prohibited activity.'})
+        issues.append("haram_industry")
+    elif not has_sector:
+        # The live provider path carries no sector for many tickers. Reporting
+        # "nothing prohibited detected" when nothing was examined is a false
+        # all-clear, so it is recorded as unverified.
+        checks.append({"status":"warn","name":"Business Activity / Industry",
+            "detail":"Sector and industry are not supplied by this data source, so the core business could not be checked. Verify against the company's filings."})
+        warnings.append("no_business_data")
+        missing.append("sector")
+    elif sc_authoritative:
+        # The official list has already vetted the business activity. Adding a
+        # "doubtful sector" warning on top made listed Islamic banks such as
+        # Public Bank and Maybank report as Doubtful directly beneath a check
+        # that read "Listed as Shariah-compliant by SC Malaysia".
+        checks.append({"status":"pass","name":"Business Activity / Industry",
+            "detail":f"Sector ({sector}) / Industry ({industry}). Covered by the SC Malaysia listing above."})
+    elif next((d for d in DOUBTFUL_SECTORS if d in combined), None):
+        checks.append({"status":"warn","name":"Business Activity / Industry",
+            "detail":f'Sector "{sector}" may have mixed income sources. Requires verification.'})
+        warnings.append("doubtful_sector")
+    else:
+        checks.append({"status":"pass","name":"Business Activity / Industry",
+            "detail":f"Sector ({sector}) / Industry ({industry}) — no prohibited activity detected."})
+
+    # ── 3. Debt-to-assets ratio (AAOIFI) ──────────────────
     if debt_ratio is None:
         checks.append({"status":"warn","name":"Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
-            "detail":"Balance sheet data unavailable."})
+            "detail":"Balance sheet data is unavailable from the current source. Unverified, not clean."})
         warnings.append("no_debt_data")
+        missing.append("debtRatio")
     elif debt_ratio > DEBT_THRESHOLD:
         sev = "fail" if debt_ratio > 0.50 else "warn"
         checks.append({"status":sev,"name":"Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
             "detail":f"Ratio is {debt_ratio*100:.1f}% — {'significantly ' if debt_ratio>0.50 else 'marginally '}exceeds the 33% AAOIFI threshold."})
-        issues.append("high_debt") if sev=="fail" else warnings.append("marginal_debt")
+        if sev == "fail": issues.append("high_debt")
+        else:             warnings.append("marginal_debt")
     else:
         checks.append({"status":"pass","name":"Debt-to-Assets Ratio (AAOIFI: ≤ 33%)",
             "detail":f"Ratio is {debt_ratio*100:.1f}% — within the permissible 33% limit."})
 
+    # ── 4. Non-permissible income (DJIM) ──────────────────
+    # The figure this app can compute is interest EXPENSE over revenue. The DJIM
+    # test is interest INCOME as a share of total revenue, and no free source
+    # used here supplies that. The proxy is labelled as a proxy so the number is
+    # not read as the DJIM ratio itself.
     if interest_ratio is None:
-        checks.append({"status":"warn","name":"Non-Permissible Revenue (DJIM: ≤ 5%)",
-            "detail":"Interest/revenue data unavailable. Verify via annual report."})
-        warnings.append("no_income_data")
+        if is_financial(sector, industry):
+            checks.append({"status":"n/a","name":"Non-Permissible Income (DJIM: ≤ 5%)",
+                "detail":"Not computed for banks and financial firms. SC Malaysia applies this test using its own method, shown in the first check above."})
+        else:
+            checks.append({"status":"warn","name":"Non-Permissible Income (DJIM: ≤ 5%)",
+                "detail":"Interest and revenue data is unavailable. Unverified, not clean."})
+            warnings.append("no_income_data")
+            missing.append("interestRatio")
     elif interest_ratio > INCOME_THRESHOLD:
         sev = "fail" if interest_ratio > 0.20 else "warn"
-        checks.append({"status":sev,"name":"Non-Permissible Revenue (DJIM: ≤ 5%)",
-            "detail":f"Interest is {interest_ratio*100:.1f}% of revenue — {'well above' if interest_ratio>0.20 else 'above'} the 5% DJIM limit."})
-        issues.append("high_interest") if sev=="fail" else warnings.append("marginal_interest")
+        checks.append({"status":sev,"name":"Non-Permissible Income (DJIM: ≤ 5%)",
+            "detail":f"Interest expense is {interest_ratio*100:.1f}% of revenue, {'well above' if interest_ratio>0.20 else 'above'} the 5% DJIM limit. Proxy measure: interest income, which DJIM actually tests, is not available from this source."})
+        if sev == "fail": issues.append("high_interest")
+        else:             warnings.append("marginal_interest")
     else:
-        checks.append({"status":"pass","name":"Non-Permissible Revenue (DJIM: ≤ 5%)",
-            "detail":f"Interest expense is {interest_ratio*100:.1f}% of revenue — within the 5% limit."})
+        checks.append({"status":"pass","name":"Non-Permissible Income (DJIM: ≤ 5%)",
+            "detail":f"Interest expense is {interest_ratio*100:.1f}% of revenue, within the 5% limit. Proxy measure: interest income, which DJIM actually tests, is not available from this source."})
 
+    # ── 5. Gharar: real value creation ────────────────────
     if pe_ratio is not None and pe_ratio < 0:
         checks.append({"status":"warn","name":"Gharar Check — Real Value Creation",
             "detail":f"Negative P/E ({pe_ratio:.1f}x) — company is loss-making."})
@@ -1365,23 +1601,27 @@ def screen_halal(name, sector, industry, description,
             "detail":"Company generates positive economic value. " +
                      (f"P/E: {pe_ratio:.1f}x." if pe_ratio else "P/E data unavailable.")})
 
+    # ── 6. Verdict ────────────────────────────────────────
     if issues:
         verdict,v_class,v_icon,v_reason = "Not Halal","haram","✗","Fails one or more categorical Shariah screening criteria."
     elif warnings:
-        verdict,v_class,v_icon,v_reason = "Doubtful","doubtful","◐","Borderline on some criteria. Consult a qualified Islamic finance scholar."
+        verdict,v_class,v_icon,v_reason = "Doubtful","doubtful","◐","Borderline, or some criteria could not be verified. Consult a qualified Islamic finance scholar."
     else:
         verdict,v_class,v_icon,v_reason = "Potentially Halal","halal","✓","Passes all standard Shariah screening criteria. Always verify with a scholar."
 
-    if issues: risk = "HIGH"
+    # ── 7. Risk ───────────────────────────────────────────
+    if issues:
+        risk = "HIGH"
     else:
         s = 0
-        dr = debt_ratio or 0; pm = profit_margin or 0
-        if dr > 0.25: s+=2
-        elif dr > 0.15: s+=1
-        if pm < 0: s+=2
-        elif pm < 0.05: s+=1
+        if debt_ratio is None:      s += 1   # unverified is not the same as clean
+        elif debt_ratio > 0.25:     s += 2
+        elif debt_ratio > 0.15:     s += 1
+        if profit_margin is None:   s += 1
+        elif profit_margin < 0:     s += 2
+        elif profit_margin < 0.05:  s += 1
         s += len(warnings)
-        risk = "HIGH" if s>=4 else ("MEDIUM" if s>=2 else "LOW")
+        risk = "HIGH" if s >= 4 else ("MEDIUM" if s >= 2 else "LOW")
 
     if verdict=="Not Halal":  rec = "AVOID — Does not meet Shariah criteria."
     elif verdict=="Doubtful": rec = "CAUTION — Seek scholar's opinion before investing."
@@ -1395,7 +1635,9 @@ def screen_halal(name, sector, industry, description,
         else:                       rec = "CAUTION — Halal but high volatility."
 
     return {"verdict":verdict,"vClass":v_class,"vIcon":v_icon,"vReason":v_reason,
-            "checks":checks,"issues":issues,"warnings":warnings,"risk":risk,"rec":rec}
+            "checks":checks,"issues":issues,"warnings":warnings,"risk":risk,"rec":rec,
+            "missingInputs":missing,
+            "dataQuality":"complete" if not missing else "partial"}
 
 # ── Dividend Purification ─────────────────────────────────
 def calc_purification(dividend, interest_ratio, currency="MYR"):
@@ -1418,11 +1660,60 @@ def calc_purification(dividend, interest_ratio, currency="MYR"):
 #  FLASK ROUTES
 # ══════════════════════════════════════════════════════════
 
+# ── Operational controls ──────────────────────────────────
+# Same-origin by default. The frontend is served by this same app, so it needs
+# no CORS grant, and a wildcard let any third-party page spend the provider's
+# daily quota through a visitor's browser. Set this only for a separate origin.
+CORS_ORIGIN = os.environ.get("MIZAN_CORS_ORIGIN", "").strip()
+
+# Required for the mutating and diagnostic endpoints. When it is unset they are
+# closed, except from loopback so local development keeps working. Fail closed:
+# an unconfigured token must not mean "open to the internet".
+ADMIN_TOKEN = os.environ.get("MIZAN_ADMIN_TOKEN", "").strip()
+
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("MIZAN_RATE_LIMIT", "30"))
+
+_rl_lock    = threading.Lock()
+_rl_buckets: dict = {}
+
+def rate_limit_ok(client: str) -> bool:
+    """
+    Fixed-window per-client counter over one minute.
+
+    Per process, so with two gunicorn workers or several Lambda containers the
+    effective ceiling is higher than the number above. It exists to stop one
+    scripted loop from burning the 1000-call daily provider quota in a couple of
+    minutes, which is exactly what an unthrottled /screen allowed, not to be an
+    exact throttle.
+    """
+    window = int(time.time() // 60)
+    with _rl_lock:
+        if len(_rl_buckets) > 4096:
+            for k in [k for k, v in _rl_buckets.items() if v["window"] != window]:
+                _rl_buckets.pop(k, None)
+        b = _rl_buckets.get(client)
+        if not b or b["window"] != window:
+            _rl_buckets[client] = {"window": window, "count": 1}
+            return True
+        b["count"] += 1
+        return b["count"] <= RATE_LIMIT_PER_MINUTE
+
+def _admin_authorised() -> bool:
+    if ADMIN_TOKEN:
+        supplied = (request.headers.get("X-Admin-Token")
+                    or request.args.get("token") or "")
+        return hmac.compare_digest(supplied, ADMIN_TOKEN)
+    return (request.remote_addr or "") in ("127.0.0.1", "::1")
+
 @app.after_request
-def add_cors(response):
-    response.headers["Access-Control-Allow-Origin"]  = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+def add_headers(response):
+    if CORS_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"]  = CORS_ORIGIN
+        response.headers["Vary"]                         = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"]        = "no-referrer"
     return response
 
 @app.route("/")
@@ -1439,25 +1730,45 @@ def api_info():
 
 @app.route("/screen")
 def screen():
-    symbol = request.args.get("symbol","").strip()
-    if not symbol or not re.match(r'^[A-Za-z0-9.\-]{1,12}$', symbol):
+    symbol = (request.args.get("symbol") or "").strip()
+    if not symbol or not re.fullmatch(r'[A-Za-z0-9.\-]{1,12}', symbol):
         return jsonify({"ok":False,"error":"Invalid or missing symbol"}), 400
+
+    if not rate_limit_ok(request.remote_addr or "unknown"):
+        return jsonify({"ok":False,
+                        "error":"Too many requests. Please wait a minute and try again."}), 429
+
     try:
         data = fetch_stock(symbol)
         return jsonify({"ok":True,"data":data,"cached":data.get("_cached",False)})
-    except Exception as e:
+    except UpstreamError as e:
+        # The provider's problem, not the caller's. Log the detail and return a
+        # message the user can act on. The old handler answered 400 with str(e),
+        # which blamed the client for an outage and echoed internals such as
+        # "Check TIINGO_API_KEY in Render environment" into the browser.
+        app.logger.warning("Upstream failure screening %s: %s", symbol, e)
+        return jsonify({"ok":False,"error":str(e)}), 502
+    except ValueError as e:
         return jsonify({"ok":False,"error":str(e)}), 400
+    except Exception:
+        app.logger.exception("Unhandled error screening %s", symbol)
+        return jsonify({"ok":False,
+                        "error":"An internal error occurred while screening this symbol."}), 500
 
 @app.route("/purify")
 def purify():
     try:
         div = float(request.args.get("dividend",       0))
         rat = float(request.args.get("interest_ratio", 0))
-        cur = request.args.get("currency","MYR").upper()[:3]
-        if div < 0 or not (0 <= rat <= 1): raise ValueError("Invalid parameters.")
-        return jsonify({"ok":True,"data":calc_purification(div,rat,cur)})
-    except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}), 400
+    except (TypeError, ValueError):
+        return jsonify({"ok":False,"error":"dividend and interest_ratio must be numbers"}), 400
+    if not (math.isfinite(div) and math.isfinite(rat)):
+        return jsonify({"ok":False,"error":"dividend and interest_ratio must be finite numbers"}), 400
+    if div < 0 or not (0 <= rat <= 1):
+        return jsonify({"ok":False,
+                        "error":"dividend must be 0 or more, and interest_ratio must be between 0 and 1"}), 400
+    cur = (request.args.get("currency") or "MYR").upper()[:3]
+    return jsonify({"ok":True,"data":calc_purification(div,rat,cur)})
 
 @app.route("/bursa/list")
 def bursa_list():
@@ -1469,27 +1780,42 @@ def bursa_list():
 
 @app.route("/cache/stats")
 def stats():
+    if not _admin_authorised():
+        return jsonify({"ok":False,"error":"Not authorised."}), 403
     return jsonify({"ok":True,"data":cache_stats()})
 
-@app.route("/cache/clear")
+@app.route("/cache/clear", methods=["POST"])
 def clear_cache():
+    # POST, and authorised. This was a GET that any crawler, prefetcher or
+    # third-party page could trigger, and each call it made the next visitor pay
+    # for again in provider quota.
+    if not _admin_authorised():
+        return jsonify({"ok":False,"error":"Not authorised."}), 403
     sym = request.args.get("symbol")
-    if sym: cache_clear(normalise_ticker(sym.strip())); msg=f"Cleared {sym}"
-    else:   cache_clear(); msg="Full cache cleared"
+    if sym:
+        cache_clear(normalise_ticker(sym.strip()))
+        msg = f"Cleared {sym}"
+    else:
+        cache_clear()
+        msg = "Full cache cleared"
     return jsonify({"ok":True,"message":msg})
 
 @app.route("/usage")
 def usage():
     s = req_stats()
     return jsonify({"ok":True,"data":s,
-        "message":f"Used {s['used']} of {s['limit']} Tiingo requests today. {s['remaining']} remaining."})
+        "scope":"per process; not the account total",
+        "message":f"Used {s['used']} of {s['limit']} Tiingo requests today in this process. {s['remaining']} remaining."})
 
 @app.route("/health")
 def health():
     return jsonify({"ok":True,"status":"Mizan backend v5 — Hybrid Edition",
                     "cache":cache_stats(),"requests":req_stats(),
                     "tiingo_key":"set" if TIINGO_KEY else "MISSING",
-                    "bursa_stocks":len(BURSA_DB)})
+                    "bursa_stocks":len(BURSA_DB),
+                    "rate_limit_per_minute":RATE_LIMIT_PER_MINUTE,
+                    "cors_origin":CORS_ORIGIN or "same-origin only",
+                    "cache_clear":"token required" if ADMIN_TOKEN else "loopback only"})
 
 if __name__ == "__main__":
     load_sc_list()
