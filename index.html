@@ -444,9 +444,6 @@ body::before{
   border-radius:50%;animation:spin 0.7s linear infinite;
 }
 @keyframes spin{to{transform:rotate(360deg)}}
-/* Reduced-motion substitute for the spinner. Fades rather than rotates, so it
-   still reads as "working" without any movement. */
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
 .loader-text{font-size:0.82rem;color:var(--text2);margin-top:12px}
 
 /* ── DISCLAIMER BAR ── */
@@ -585,18 +582,19 @@ body::before{
     transition-duration:0.001ms!important;
     scroll-behavior:auto!important;
   }
-  /* The blanket rule above is meant to stop decorative movement, but it also
-     caught the loading ring, which runs for the whole request and had no other
-     indicator. A spinner that does not spin cannot be told apart from a frozen
-     page, so this is worse than the movement it avoids. Swapped for a pulse:
-     still clearly working, no rotation. The !important is required because the
-     rule above sets the same properties with !important, and .loader-ring wins
-     on specificity. */
+  /* The blanket rule above is for decorative movement; the loader is the one
+     element it must not reach. The ring runs for the whole request and is the
+     only sign anything is happening. Frozen, it reads as a hung page, and a
+     non-moving substitute reads as broken or as a flash, so both are worse
+     than the movement they avoid. A 36px ring is also the ordinary exception
+     to this preference: it is small and it has no alternative feedback.
+     !important is required because the rule above sets the same properties
+     with !important, and .loader-ring outranks * on specificity. */
   .loader-ring{
-    animation-name:pulse!important;
-    animation-duration:1.4s!important;
+    animation-name:spin!important;
+    animation-duration:0.7s!important;
     animation-iteration-count:infinite!important;
-    animation-timing-function:ease-in-out!important;
+    animation-timing-function:linear!important;
   }
 }
 
