@@ -8,10 +8,16 @@ reapplying the same edit fails a test rather than a user noticing it.
 The defect behind the first test: a blanket `prefers-reduced-motion` rule set
 `animation-duration:0.001ms` and `animation-iteration-count:1` on `*`. The
 loading ring runs `animation:spin 0.7s linear infinite` for the whole request
-and there is no other activity indicator, so for anyone with reduce-motion
-enabled the ring stopped rotating and sat as a motionless circle. It reads as a
-frozen page. Only slow requests made it visible, which is why it surfaced on US
-tickers rather than on Bursa codes.
+and is the only sign that anything is happening, so for anyone with
+reduce-motion enabled the ring stopped rotating and sat as a motionless circle
+that reads as a hung page. Only slow requests made it visible, which is why it
+surfaced on US tickers rather than on Bursa codes.
+
+The chosen resolution is that the loader is the one element the blanket rule
+does not apply to: the ring always rotates. A substitute that does not move was
+tried and rejected, because a spinner that pulses instead of turning reads as a
+broken page flashing. These tests pin that decision, so the override cannot be
+quietly dropped or changed back to a non-moving indicator.
 """
 
 import re
@@ -69,19 +75,25 @@ class TestLoaderSurvivesReducedMotion:
             "request and read it as a hang."
         )
 
-    def test_ring_does_not_rotate(self, reduced_motion):
-        # The fix must not simply restore `spin`, which is the movement the
-        # preference asked us to avoid.
+    def test_ring_keeps_its_rotation(self, reduced_motion):
+        # The loader is the deliberate exception to the blanket reset. A
+        # non-moving substitute was tried: it reads as broken, or as a page
+        # flashing, which is what prompted this test.
         decls = _declarations(reduced_motion, ".loader-ring")
-        assert "spin" not in decls, (
-            "The reduced-motion override restores the rotation instead of "
-            "substituting a non-moving indicator, which defeats the setting."
+        assert "spin" in decls, (
+            "The reduced-motion block no longer restores the ring's rotation. "
+            "Without it the spinner freezes and the page looks hung."
         )
 
-    def test_substitute_keyframes_exist(self):
-        assert "@keyframes pulse" in _css(), (
-            ".loader-ring references @keyframes pulse under reduced motion, "
-            "but the keyframes are not defined."
+    def test_referenced_keyframes_are_defined(self):
+        css = _css()
+        block = _at_rule_body(css, "@media (prefers-reduced-motion: reduce)")
+        decls = _declarations(block, ".loader-ring")
+        name = re.search(r"animation-name:\s*([A-Za-z][\w-]*)", decls)
+        assert name, ".loader-ring override sets no animation-name"
+        assert f"@keyframes {name.group(1)}" in css, (
+            f".loader-ring uses @keyframes {name.group(1)}, which is not "
+            "defined, so the ring would not animate at all."
         )
 
     def test_blanket_reset_is_still_there(self, reduced_motion):
