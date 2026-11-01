@@ -181,6 +181,18 @@ body::before{
 }
 .chip:hover{border-color:var(--gold-dim);color:var(--gold2);background:var(--gold-glow)}
 
+.ask-box{
+  background:var(--surface);border:1px solid var(--border2);
+  border-radius:var(--r);padding:20px 24px;margin-bottom:16px;
+}
+.ask-answer{
+  display:none;margin-top:14px;padding:14px 16px;
+  background:var(--bg);border:1px solid var(--border2);
+  border-radius:var(--r-sm);color:var(--text);
+  font-size:0.88rem;line-height:1.65;white-space:pre-wrap;
+}
+.ask-answer.visible{display:block}
+
 /* ══════════════════════════════════════════════
    RESULT CARD
 ══════════════════════════════════════════════ */
@@ -676,6 +688,24 @@ body::before{
         </div>
       </div>
 
+      <div class="ask-box">
+        <div class="chips-label" style="margin-bottom:8px">Ask in plain English</div>
+        <div class="search-row" style="margin-bottom:10px">
+          <input id="askInput" class="search-input"
+            type="text" maxlength="500"
+            placeholder="e.g. Is Maybank halal?  ·  Compare Tenaga and Maxis"
+            aria-label="Ask the screening assistant a question"
+            autocomplete="off" autocorrect="off" spellcheck="false"/>
+          <button class="btn-primary" id="askBtn" onclick="askAgent()">Ask</button>
+        </div>
+        <div class="chips-row">
+          <button class="chip" onclick="askAgent('Is Maybank halal?')">Is Maybank halal?</button>
+          <button class="chip" onclick="askAgent('Compare Tenaga and Maxis')">Compare Tenaga and Maxis</button>
+          <button class="chip" onclick="askAgent('Which utilities companies have debt below 25%?')">Utilities with low debt</button>
+        </div>
+        <div id="askAnswer" class="ask-answer" role="status" aria-live="polite"></div>
+      </div>
+
       <!-- Loader -->
       <div id="loader" role="status" aria-live="polite">
         <div class="loader-ring"></div>
@@ -1071,6 +1101,35 @@ async function fetchScreen(symbol, externalSignal) {
 async function fetchStockData(symbol, externalSignal) {
   await checkBackend(externalSignal);
   return fetchScreen(symbol, externalSignal);
+}
+
+async function askAgent(question) {
+  const input = document.getElementById('askInput');
+  const q = (question || input.value).trim();
+  if (!q) return;
+  input.value = q;
+  const btn = document.getElementById('askBtn');
+  const out = document.getElementById('askAnswer');
+  btn.disabled = true;
+  out.classList.add('visible');
+  out.textContent = 'Thinking…';
+  try {
+    const resp = await fetch(`${API}/ask`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q}),
+      signal: AbortSignal.timeout(120000)
+    });
+    const json = await resp.json();
+    if (!json.ok) throw new Error(json.error || 'The assistant could not answer.');
+    out.textContent = json.data.answer;
+  } catch (e) {
+    out.textContent = e.name === 'TimeoutError'
+      ? 'The assistant took too long. Try a shorter question.'
+      : (e.message || 'Could not reach the assistant.');
+  } finally {
+    btn.disabled = false;
+  }
 }
 /* ══════════════════════════════════════════════════════════
    DISPLAY

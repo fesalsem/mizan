@@ -55,3 +55,4 @@ def _forbid_network(monkeypatch):
         )
 
     monkeypatch.setattr(_server.requests, "get", _blocked)
+    monkeypatch.setattr(_server.requests, "post", _blocked)

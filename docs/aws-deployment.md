@@ -76,10 +76,16 @@ TIINGO_API_KEY=your_real_key_here ./create-function.sh
 After that, `./deploy.sh` on its own rebuilds, pushes, and updates the live
 function, so the three-step dance is only ever needed once.
 
-Only `create-function.sh` needs the key; `deploy.sh` builds and pushes and
-never reads it. `create-function.sh` will also read the key from the repo's
-`.env` if it is not in the environment, which is the easier route and keeps it
-out of shell history.
+Only `create-function.sh` needs credentials; `deploy.sh` builds and pushes and
+never reads them. `create-function.sh` reads `TIINGO_API_KEY` and the optional
+`MIZAN_LLM_BASE_URL`, `MIZAN_LLM_API_KEY` and `MIZAN_AGENT_MODEL` from the
+environment, falling back to the repo's `.env`, which is the easier route and
+keeps them out of shell history.
+
+The `MIZAN_LLM_*` settings are what make `/ask` work on the function: there is
+no model server in the container, so it has to point at a hosted
+OpenAI-compatible endpoint. Without them everything else still works and `/ask`
+answers 502. `create-function.sh` prints a note when the base URL is missing.
 
 If `create-function.sh` reports that the account cannot use Lambda, the account
 is not fully activated. See Troubleshooting.
@@ -111,12 +117,19 @@ aws lambda update-function-configuration \
   --function-name mizan \
   --region ap-southeast-1 \
   --memory-size 512 \
-  --timeout 30 \
-  --environment "Variables={TIINGO_API_KEY=new_key,PORT=8080}"
+  --timeout 45 \
+  --environment "Variables={TIINGO_API_KEY=new_key,PORT=8080,MIZAN_LLM_TIMEOUT=20,MIZAN_LLM_BASE_URL=https://api.groq.com/openai/v1,MIZAN_LLM_API_KEY=...,MIZAN_AGENT_MODEL=openai/gpt-oss-120b}"
 ```
 
-The API key has to be updated here rather than in a `.env` file. `.env` is for
-local `docker compose` only and is gitignored.
+`--environment` replaces the whole map. A variable you leave out is deleted, so
+list everything the function should keep. The easier route is to put the values
+in the repo's gitignored `.env` and re-run `create-function.sh`, which rebuilds
+the map from the environment and `.env` together.
+
+The timeout is 45 rather than 30 because `/ask` may wait up to
+`MIZAN_LLM_TIMEOUT` (20) seconds on the model before the screening work
+starts. Gunicorn inside the image is capped at 25 seconds, under the Function
+URL's 30 second response limit.
 
 ## Reading logs
 

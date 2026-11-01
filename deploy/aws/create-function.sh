@@ -16,11 +16,15 @@
 # has the full first-deploy order.
 #
 # Usage:
-#   TIINGO_API_KEY=xxx ./create-function.sh
+#   TIINGO_API_KEY=xxx MIZAN_LLM_BASE_URL=... MIZAN_LLM_API_KEY=... ./create-function.sh
 #
 # TIINGO_API_KEY is read from the environment. It is never written to disk and
 # never committed. server.py calls check_setup() at import time, so the
 # function will exit on every invocation without it.
+#
+# The MIZAN_LLM_* variables are optional. They point /ask at a hosted
+# OpenAI-compatible endpoint, because the function has no local model server.
+# Leave them unset and every other endpoint still works; /ask answers 502.
 
 set -euo pipefail
 
@@ -30,7 +34,9 @@ ROLE_NAME="${ROLE_NAME:-mizan-lambda-execution}"
 REPO_NAME="${REPO_NAME:-mizan}"
 IMAGE_TAG="${IMAGE_TAG:-lambda}"
 MEMORY_MB="${MEMORY_MB:-512}"
-TIMEOUT_S="${TIMEOUT_S:-30}"
+# /ask may spend up to MIZAN_LLM_TIMEOUT (20s below) waiting on the model, so
+# the function needs headroom over that plus cold start and the screening calls.
+TIMEOUT_S="${TIMEOUT_S:-45}"
 ARCH="${ARCH:-x86_64}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +46,9 @@ ENV_FILE="${SCRIPT_DIR}/../../.env"
 # key already lives for docker compose and which is gitignored. The point is to
 # avoid the key being pasted into a shell history or a chat log.
 if [[ -z "${TIINGO_API_KEY:-}" && -f "${ENV_FILE}" ]]; then
-  TIINGO_API_KEY="$(grep -E '^TIINGO_API_KEY=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '"'"'"' \r')"
+  # Strip CR and surrounding quotes only. tr's ' \r' spelling deletes every
+  # letter r, which silently corrupts any key that contains one.
+  TIINGO_API_KEY="$(grep -E '^TIINGO_API_KEY=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '\r"' | tr -d "'" || true)"
   export TIINGO_API_KEY
 fi
 
@@ -63,6 +71,29 @@ case "${KEY_LOWER}" in
     exit 1
     ;;
 esac
+
+# The agent's settings are optional and are read the same way as the key.
+for VAR in MIZAN_LLM_BASE_URL MIZAN_LLM_API_KEY MIZAN_AGENT_MODEL; do
+  if [[ -z "${!VAR:-}" && -f "${ENV_FILE}" ]]; then
+    VALUE="$(grep -E "^${VAR}=" "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '\r"' | tr -d "'" || true)"
+    printf -v "${VAR}" '%s' "${VALUE}"
+    export "${VAR}"
+  fi
+done
+if [[ -z "${MIZAN_LLM_BASE_URL:-}" ]]; then
+  echo "Note: MIZAN_LLM_BASE_URL is unset, so /ask will answer 502 on the function." >&2
+fi
+
+# Lambda takes one comma-separated string, so only non-empty values go in.
+# Provider keys are alphanumeric, so none of them contain a comma.
+# 20s, not 25: gunicorn inside the image is itself capped at 25s, under the
+# Function URL's 30s response limit, and the agent has to answer before that.
+ENV_VARS="TIINGO_API_KEY=${TIINGO_API_KEY},PORT=8080,MIZAN_LLM_TIMEOUT=${MIZAN_LLM_TIMEOUT:-20}"
+for VAR in MIZAN_LLM_BASE_URL MIZAN_LLM_API_KEY MIZAN_AGENT_MODEL; do
+  if [[ -n "${!VAR:-}" ]]; then
+    ENV_VARS="${ENV_VARS},${VAR}=${!VAR}"
+  fi
+done
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}:${IMAGE_TAG}"
@@ -121,15 +152,18 @@ if aws lambda get-function --function-name "${FUNCTION_NAME}" --region "${REGION
   # environment is updated here too. Updating only the code would leave the
   # previous key in place and the screening endpoint returning 403, which is a
   # confusing way to discover that this branch did nothing.
-  echo "  exists, updating image and environment"
+  echo "  exists, updating image, environment and timeout"
   aws lambda update-function-code \
     --function-name "${FUNCTION_NAME}" \
     --image-uri "${IMAGE_URI}" \
     --region "${REGION}" >/dev/null
   aws lambda wait function-updated --function-name "${FUNCTION_NAME}" --region "${REGION}"
+  # The timeout is reapplied here as well, so a function created before /ask
+  # existed is raised to the value this script now uses.
   aws lambda update-function-configuration \
     --function-name "${FUNCTION_NAME}" \
-    --environment "Variables={TIINGO_API_KEY=${TIINGO_API_KEY},PORT=8080}" \
+    --timeout "${TIMEOUT_S}" \
+    --environment "Variables={${ENV_VARS}}" \
     --region "${REGION}" >/dev/null
 
   # wait function-active only tracks State, not LastUpdateStatus, so an
@@ -175,7 +209,7 @@ else
         --architectures "${ARCH}" \
         --memory-size "${MEMORY_MB}" \
         --timeout "${TIMEOUT_S}" \
-        --environment "Variables={TIINGO_API_KEY=${TIINGO_API_KEY},PORT=8080}" \
+        --environment "Variables={${ENV_VARS}}" \
         --region "${REGION}" 2>&1)"; then
       break
     fi

@@ -15,6 +15,24 @@ services:
       - key: TIINGO_API_KEY
         sync: false
 
+      # Plain-English answers. Render has no model server of its own, so /ask
+      # needs a hosted OpenAI-compatible endpoint serving an open-weight model.
+      # Groq is one that does it free; OpenRouter works the same way, as does
+      # any other OpenAI-compatible host. If the key is left unset the rest of
+      # the app still works and only /ask answers 502.
+      - key: MIZAN_LLM_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: MIZAN_LLM_API_KEY
+        sync: false
+      # Must be a tool-calling model the base URL actually serves; hosted
+      # models get retired, so check the provider's list before changing it.
+      - key: MIZAN_AGENT_MODEL
+        value: openai/gpt-oss-120b
+      # Total seconds one answer may wait on the model, across its tool rounds.
+      # Well under the 60s gunicorn worker timeout on the line above.
+      - key: MIZAN_LLM_TIMEOUT
+        value: "20"
+
       # Render honors PYTHON_VERSION here; it takes precedence over runtime.txt.
       # runtime.txt pins the same version for other tooling, so keep the two in
       # sync if either is changed.

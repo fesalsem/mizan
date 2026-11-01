@@ -33,6 +33,7 @@ That's it.
 - **6-month price chart** — price history at a glance
 - **Buy / Hold / Avoid recommendation** — based on fundamentals and risk
 - **Watchlist** — save and track stocks you care about
+- **Ask in plain English** — type a question such as "compare Tenaga and Maxis" and an assistant screens the companies for you. It never decides compliance itself: every verdict it reports comes from the same rules engine as a normal search.
 - **Broker guide** — a comparison of licensed brokers for placing actual trades
 
 ---
@@ -136,6 +137,21 @@ export TIINGO_API_KEY="your_key_here"
 $env:TIINGO_API_KEY="your_key_here"
 ```
 
+The plain-English assistant needs an open-source model behind an
+OpenAI-compatible API. The default points at a local Ollama:
+
+```bash
+ollama pull qwen2.5:7b
+ollama serve
+```
+
+Without a model server the rest of the app runs normally and only `/ask`
+answers 502. To use a hosted open model instead, point `MIZAN_LLM_BASE_URL` at
+Groq, OpenRouter or any other OpenAI-compatible endpoint and set
+`MIZAN_LLM_API_KEY` and `MIZAN_AGENT_MODEL` to a model that host serves and
+that supports tool calling. A local 7B model on CPU can take a minute per call,
+so the default timeout is generous; the deployed hosts set it to 20 seconds.
+
 ### 2. Install dependencies
 ```bash
 pip install -r requirements.txt
@@ -177,6 +193,11 @@ image, so these are the only knobs that differ.
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `TIINGO_API_KEY` | none | Required. `server.py` calls `check_setup()` at import time and exits if it is missing. |
+| `MIZAN_LLM_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for `/ask`. Default is a local Ollama. |
+| `MIZAN_LLM_API_KEY` | unset | Sent as a bearer token. Ollama needs none; hosted providers do. |
+| `MIZAN_AGENT_MODEL` | `qwen2.5:7b` | Model used by `/ask`. It must support tool calling. |
+| `MIZAN_LLM_TIMEOUT` | `110` | Seconds one answer may spend waiting on the model in total, shared across its tool rounds. Both deployments set it to `20`, under each host's response limit. |
+| `MIZAN_AGENT_LIMIT` | `6` | Questions per client per minute on `/ask`, separate from `MIZAN_RATE_LIMIT` because each one spends compute. |
 | `MIZAN_ADMIN_TOKEN` | unset | Guards `/cache/clear` and `/cache/stats` via the `X-Admin-Token` header or a `token` query parameter. **Set this on any public deployment.** With it unset those endpoints accept loopback only, which is fine locally and is not what you want in production. |
 | `MIZAN_CORS_ORIGIN` | unset | Unset means same-origin only, which is correct when this app serves its own frontend. Set it only when the UI is hosted elsewhere. |
 | `MIZAN_RATE_LIMIT` | `60` | Screens per client per minute. Sized to clear a full watchlist refresh, which is one request per saved ticker. |
@@ -218,7 +239,9 @@ index.html  ←→  Flask + Gunicorn  ←→  Tiingo API (US prices + fundamenta
                                        Annual report figures (31 Bursa, 19 US)
 ```
 
-The Python backend handles all data fetching and Shariah screening logic. The frontend is a single HTML file that calls the backend over same-origin REST endpoints (`/screen`, `/purify`, `/health`) — no frameworks, no build step.
+The Python backend handles all data fetching and Shariah screening logic. The frontend is a single HTML file that calls the backend over same-origin REST endpoints (`/screen`, `/purify`, `/ask`, `/health`) — no frameworks, no build step.
+
+`/ask` is the only endpoint that calls a language model. The model is open source and runs behind any OpenAI-compatible API, so the default is a local Ollama and no data leaves the machine. It gets three tools (`find_company`, `list_companies`, `screen_company`), runs at most three tool rounds, and takes every verdict from `screen_company`. A symbol that is not in either database is refused by the tool, so the model cannot screen or name a company it was not given.
 
 **Tech Stack:** Python · JavaScript · REST API · Tiingo API (US) · Yahoo Finance (Bursa live prices) · annual report database (financials) · Docker · AWS Lambda · Amazon ECR · CloudWatch
 
@@ -234,6 +257,19 @@ The same application runs on two hosts.
 `Dockerfile.lambda` is the AWS build. Three differences from the local `Dockerfile`, each commented in the file: it starts from the AWS managed Python base image, it copies the Lambda Web Adapter in as an extension, and it overrides the base image `ENTRYPOINT` so Gunicorn starts directly.
 
 Measured on the deployed function: warm requests return in 55 to 94 ms, cold starts take 1.75 to 1.79 seconds.
+
+Neither host has a local model server, so `/ask` needs a hosted OpenAI-compatible
+endpoint. Both deployments are already wired for it:
+
+| Host | Where the settings live |
+|------|-------------------------|
+| Render | `render.yaml` (`MIZAN_LLM_BASE_URL`, `MIZAN_AGENT_MODEL`, `MIZAN_LLM_TIMEOUT`); `MIZAN_LLM_API_KEY` has `sync: false`, so Render asks for it at deploy time |
+| AWS | `create-function.sh` reads `MIZAN_LLM_BASE_URL`, `MIZAN_LLM_API_KEY` and `MIZAN_AGENT_MODEL` from the environment or the repo's `.env`, and writes them into the function's environment on every run |
+
+The base URL in `render.yaml` is Groq and the model is `openai/gpt-oss-120b`.
+Both are editable: any OpenAI-compatible host works, and the model name has to
+be one that host serves. Without these the app deploys fine and only `/ask`
+answers 502, which `/health` explains by reporting `llm_base_url`.
 
 To redeploy after a code change:
 

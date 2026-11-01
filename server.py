@@ -9,7 +9,7 @@ Data sources:
 Requires environment variable: TIINGO_API_KEY
 Get a free key at: https://api.tiingo.com (instant signup)
 """
-import json, math, time, threading, re, hmac
+import difflib, json, math, time, threading, re, hmac
 from flask import Flask, request, jsonify, send_from_directory
 from pathlib import Path
 import os, sys, importlib.util
@@ -1668,6 +1668,228 @@ def calc_purification(dividend, interest_ratio, currency="MYR"):
             "isRequired":purify>0,"percentage":round(interest_ratio*100,2)}
 
 # ══════════════════════════════════════════════════════════
+#  AGENT — plain-English screener
+# ══════════════════════════════════════════════════════════
+# The model chooses tools and writes the answer. It never decides halal or
+# haram: every verdict it may report comes from screen_company, which runs the
+# same engine as /screen.
+
+# Any OpenAI-compatible endpoint works: Ollama locally, or a hosted open-model
+# API such as Groq or OpenRouter. Ollama needs no key.
+LLM_BASE_URL = os.environ.get("MIZAN_LLM_BASE_URL", "http://localhost:11434/v1").rstrip("/")
+LLM_API_KEY  = os.environ.get("MIZAN_LLM_API_KEY", "").strip()
+AGENT_MODEL  = os.environ.get("MIZAN_AGENT_MODEL", "qwen2.5:7b")
+# Seconds one answer may spend waiting on the model in total, shared across the
+# tool rounds. Deployments set it lower (20) so a stalled call still returns
+# before the host's own response timeout; a local Ollama on CPU needs more.
+LLM_TIMEOUT  = float(os.environ.get("MIZAN_LLM_TIMEOUT", "110"))
+AGENT_ROUNDS = 3
+AGENT_LIMIT_PER_MINUTE = int(os.environ.get("MIZAN_AGENT_LIMIT", "6"))
+
+_LEGAL_WORDS = {"berhad", "bhd", "sdn", "inc", "corporation", "corp",
+                "company", "ltd", "limited"}
+
+def _clean_name(s: str) -> str:
+    s = re.sub(r"[^a-z0-9 ]", " ", (s or "").lower())
+    return " ".join(w for w in s.split() if w not in _LEGAL_WORDS)
+
+def _company_rows() -> list:
+    rows = []
+    for code, v in BURSA_DB.items():
+        rows.append({"code": code, "name": v["name"], "market": "Bursa",
+                     "sector": v.get("sector", ""), "currency": v.get("currency", "MYR"),
+                     "price": v.get("price"),
+                     "debtRatio": v.get("debtRatio"),
+                     "interestRatio": v.get("interestRatio")})
+    for code, v in US_DB.items():
+        rows.append({"code": code, "name": v["name"], "market": "US",
+                     "sector": v.get("sector", ""), "currency": v.get("currency", "USD"),
+                     "price": None,
+                     "debtRatio": v.get("debt_ratio"),
+                     "interestRatio": v.get("interest_ratio")})
+    return rows
+
+_COMPANY_ROWS = _company_rows()
+
+def find_company(query: str) -> list:
+    """Resolve a company name, partial name or ticker to stock codes."""
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    upper = q.upper()
+    exact = [r for r in _COMPANY_ROWS if r["code"] == upper]
+    if exact:
+        return exact
+
+    cq = _clean_name(q)
+    tokens = cq.split()
+    scored = []
+    for row in _COMPANY_ROWS:
+        name = _clean_name(row["name"])
+        # "Malayan Banking Berhad (Maybank)" gives "maybank" for free.
+        aliases = [_clean_name(a) for a in re.findall(r"\(([^)]+)\)", row["name"])]
+        if (cq and cq == name) or cq in aliases:
+            score = 1.0
+        elif tokens and all(t in name.split() for t in tokens):
+            score = 0.9
+        elif cq:
+            names = [name] + aliases
+            score = max(difflib.SequenceMatcher(None, cq, n).ratio() for n in names)
+        else:
+            score = 0.0
+        if score >= 0.7:
+            scored.append((score, row))
+    scored.sort(key=lambda p: (-p[0], p[1]["name"]))
+    return [row for _, row in scored[:5]]
+
+def list_companies(sector: str = "", market: str = "") -> list:
+    """List the companies held in the database, with stored financial ratios."""
+    s = (sector or "").strip().lower()
+    m = (market or "").strip().lower()
+    return [r for r in _COMPANY_ROWS
+            if (not s or s in r["sector"].lower())
+            and (not m or m == r["market"].lower())]
+
+def screen_company(symbol: str) -> dict:
+    """Run the Shariah engine for one stock. Only database symbols are allowed."""
+    ticker = normalise_ticker(symbol)
+    if ticker not in BURSA_DB and ticker not in US_DB:
+        return {"error": f"{symbol} is not in the database. "
+                         "Use find_company or list_companies first."}
+    d = fetch_stock(ticker)
+    sc = d.get("screening") or {}
+    return {
+        "ticker":       d.get("ticker"),
+        "name":         d.get("name"),
+        "sector":       d.get("sector"),
+        "currency":     d.get("currency"),
+        "price":        d.get("price"),
+        "debtRatio":    d.get("debtRatio"),
+        "interestRatio": d.get("interestRatio"),
+        "verdict":      sc.get("verdict"),
+        "verdictReason": sc.get("vReason"),
+        "risk":         sc.get("risk"),
+        "recommendation": sc.get("rec"),
+        "checks":       [{"name": c.get("name"), "status": c.get("status"),
+                          "detail": c.get("detail")} for c in sc.get("checks", [])],
+        "missingInputs": sc.get("missingInputs"),
+        "dataQuality":  sc.get("dataQuality"),
+    }
+
+AGENT_TOOLS = [
+    {"type": "function", "function": {
+        "name": "find_company",
+        "description": "Resolve a company name, partial name or ticker to stock codes. "
+                       "Call this first when the user names a company instead of a code.",
+        "parameters": {"type": "object",
+                       "properties": {"query": {"type": "string",
+                           "description": "Company name or partial name, e.g. 'maybank'."}},
+                       "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "list_companies",
+        "description": "List stocks held in the database with their stored financial ratios. "
+                       "Use this to find candidates by sector or market. Ratios are from annual "
+                       "reports, not live.",
+        "parameters": {"type": "object",
+                       "properties": {"sector": {"type": "string",
+                           "description": "Optional sector substring, e.g. 'utilities'."},
+                           "market": {"type": "string",
+                           "description": "Optional market: 'Bursa' or 'US'."}}}}},
+    {"type": "function", "function": {
+        "name": "screen_company",
+        "description": "Run the official Shariah screening engine for one stock and return its "
+                       "verdict. Only pass codes returned by find_company or list_companies. "
+                       "Quote the verdict from this result; never decide compliance yourself.",
+        "parameters": {"type": "object",
+                       "properties": {"symbol": {"type": "string",
+                           "description": "Stock code or ticker, e.g. '1155' or 'NVDA'."}},
+                       "required": ["symbol"]}}},
+]
+
+AGENT_SYSTEM = """You are Mizan's screening assistant for Malaysian retail investors.
+
+Rules:
+- Every halal, doubtful or not-halal verdict must come from screen_company. Never decide compliance yourself and never infer it from a sector name.
+- Never name a company that no tool returned.
+- Call find_company when the user gives a name, not a code. If several companies match and the choice matters, ask which one.
+- Use only the numbers a tool returned. Do not estimate a ratio.
+- Treat dataQuality 'partial' as unverified, never as clean.
+- Reply in the language the user used, Malay or English.
+- Plain language: explain a ratio as sen per RM1, not as a decimal.
+- End with one concrete next step. No financial advice and no price predictions.
+- Keep the answer under 200 words unless the user asks for detail."""
+
+_AGENT_FUNCS = {"find_company": find_company,
+                "list_companies": list_companies,
+                "screen_company": screen_company}
+
+def _llm_chat(messages: list, timeout: float = None) -> dict:
+    """One chat-completions call. Works with Ollama, vLLM, Groq, OpenRouter."""
+    headers = {"Content-Type": "application/json"}
+    if LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+    response = requests.post(
+        f"{LLM_BASE_URL}/chat/completions", headers=headers,
+        timeout=timeout or LLM_TIMEOUT,
+        json={"model": AGENT_MODEL,
+              "messages": [{"role": "system", "content": AGENT_SYSTEM}] + messages,
+              "tools": AGENT_TOOLS, "temperature": 0.2, "max_tokens": 1024})
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]
+
+def _run_tool(name: str, args: dict):
+    fn = _AGENT_FUNCS.get(name)
+    if not fn:
+        return {"error": f"Unknown tool: {name}"}
+    try:
+        return fn(**(args or {}))
+    except TypeError:
+        return {"error": f"Bad arguments for {name}."}
+    except UpstreamError:
+        return {"error": "Could not fetch that stock right now. Try again later."}
+    except Exception:
+        app.logger.exception("Agent tool %s failed", name)
+        return {"error": f"{name} failed."}
+
+def run_agent(question: str) -> dict:
+    """One question, one answer. No history is kept between requests."""
+    messages = [{"role": "user", "content": question}]
+    screened = []
+    answer = ""
+    deadline = time.monotonic() + LLM_TIMEOUT
+
+    for _ in range(AGENT_ROUNDS):
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            break
+        message = _llm_chat(messages, remaining)
+        calls = message.get("tool_calls") or []
+        messages.append({"role": "assistant", "content": message.get("content") or "",
+                         **({"tool_calls": calls} if calls else {})})
+        if not calls:
+            answer = (message.get("content") or "").strip()
+            break
+
+        for call in calls:
+            fn = call.get("function") or {}
+            raw = fn.get("arguments")
+            try:
+                args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+            except ValueError:
+                args = {}
+            out = _run_tool(fn.get("name") or "", args)
+            failed = isinstance(out, dict) and "error" in out
+            if fn.get("name") == "screen_company" and not failed:
+                screened.append(out)
+            messages.append({"role": "tool", "tool_call_id": call.get("id") or "",
+                             "content": json.dumps(out, ensure_ascii=False)})
+
+    return {"answer": answer or ("I could not finish that within the allowed steps. "
+                                 "Try a narrower question, such as one company name."),
+            "screened": screened}
+
+# ══════════════════════════════════════════════════════════
 #  FLASK ROUTES
 # ══════════════════════════════════════════════════════════
 
@@ -1703,6 +1925,9 @@ TRUST_PROXY = os.environ.get("MIZAN_TRUST_PROXY", "1") == "1"
 
 _rl_lock    = threading.Lock()
 _rl_buckets: dict = {}
+# Separate budget for /ask: each question costs model tokens, so it cannot share
+# the 60-per-minute allowance meant for cheap screening calls.
+_agent_rl_buckets: dict = {}
 
 def client_ip() -> str:
     if TRUST_PROXY:
@@ -1713,7 +1938,7 @@ def client_ip() -> str:
                 return first
     return request.remote_addr or "unknown"
 
-def rate_limit_ok(client: str) -> bool:
+def rate_limit_ok(client: str, limit: int = None, buckets: dict = None) -> bool:
     """
     Fixed-window per-client counter over one minute.
 
@@ -1723,17 +1948,19 @@ def rate_limit_ok(client: str) -> bool:
     minutes, which is exactly what an unthrottled /screen allowed, not to be an
     exact throttle.
     """
+    limit = RATE_LIMIT_PER_MINUTE if limit is None else limit
+    buckets = _rl_buckets if buckets is None else buckets
     window = int(time.time() // 60)
     with _rl_lock:
-        if len(_rl_buckets) > 4096:
-            for k in [k for k, v in _rl_buckets.items() if v["window"] != window]:
-                _rl_buckets.pop(k, None)
-        b = _rl_buckets.get(client)
+        if len(buckets) > 4096:
+            for k in [k for k, v in buckets.items() if v["window"] != window]:
+                buckets.pop(k, None)
+        b = buckets.get(client)
         if not b or b["window"] != window:
-            _rl_buckets[client] = {"window": window, "count": 1}
+            buckets[client] = {"window": window, "count": 1}
             return True
         b["count"] += 1
-        return b["count"] <= RATE_LIMIT_PER_MINUTE
+        return b["count"] <= limit
 
 def _admin_authorised() -> bool:
     if ADMIN_TOKEN:
@@ -1813,6 +2040,26 @@ def purify():
     cur = (request.args.get("currency") or "MYR").upper()[:3]
     return jsonify({"ok":True,"data":calc_purification(div,rat,cur)})
 
+@app.route("/ask", methods=["POST"])
+def ask():
+    if not rate_limit_ok(client_ip(), AGENT_LIMIT_PER_MINUTE, _agent_rl_buckets):
+        return jsonify({"ok":False,
+                        "error":"Too many questions. Please wait a minute and try again."}), 429
+
+    body = request.get_json(silent=True) or {}
+    question = str(body.get("question") or "").strip()
+    if not question:
+        return jsonify({"ok":False,"error":"Missing question."}), 400
+    if len(question) > 500:
+        return jsonify({"ok":False,"error":"Keep the question under 500 characters."}), 400
+
+    try:
+        return jsonify({"ok":True,"data":run_agent(question)})
+    except Exception:
+        app.logger.exception("Agent failed")
+        return jsonify({"ok":False,
+                        "error":"The assistant could not answer that right now."}), 502
+
 @app.route("/bursa/list")
 def bursa_list():
     """List all available Bursa stocks in the database."""
@@ -1855,8 +2102,11 @@ def health():
     return jsonify({"ok":True,"status":"Mizan backend v5 — Hybrid Edition",
                     "cache":cache_stats(),"requests":req_stats(),
                     "tiingo_key":"set" if TIINGO_KEY else "MISSING",
+                    "agent_model":AGENT_MODEL,
+                    "llm_base_url":LLM_BASE_URL,
                     "bursa_stocks":len(BURSA_DB),
                     "rate_limit_per_minute":RATE_LIMIT_PER_MINUTE,
+                    "agent_limit_per_minute":AGENT_LIMIT_PER_MINUTE,
                     "cors_origin":CORS_ORIGIN or "same-origin only",
                     "trust_proxy":TRUST_PROXY,
                     "cache_clear":"token required" if ADMIN_TOKEN else "loopback only"})
