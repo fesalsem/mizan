@@ -1103,6 +1103,18 @@ async function fetchStockData(symbol, externalSignal) {
   return fetchScreen(symbol, externalSignal);
 }
 
+/* The answer is shown with textContent, never innerHTML. Models still emit
+   markdown out of habit, so its punctuation is stripped rather than rendered. */
+function plainAnswer(text) {
+  return String(text || '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/^\s*[-*]\s+/gm, '• ')
+    .replace(/^#{1,6}\s*/gm, '')
+    .trim();
+}
+
 async function askAgent(question) {
   const input = document.getElementById('askInput');
   const q = (question || input.value).trim();
@@ -1122,7 +1134,7 @@ async function askAgent(question) {
     });
     const json = await resp.json();
     if (!json.ok) throw new Error(json.error || 'The assistant could not answer.');
-    out.textContent = json.data.answer;
+    out.textContent = plainAnswer(json.data.answer);
   } catch (e) {
     out.textContent = e.name === 'TimeoutError'
       ? 'The assistant took too long. Try a shorter question.'

@@ -16,6 +16,9 @@ import os, sys, importlib.util
 import requests
 
 app = Flask(__name__)
+# No route takes a large body. This rejects an oversized request before Flask
+# parses it, so a caller cannot spend memory on JSON that will be refused anyway.
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 
 # Directory where server.py (and index.html) live.
 BASE_DIR = Path(__file__).resolve().parent
@@ -1684,6 +1687,9 @@ AGENT_MODEL  = os.environ.get("MIZAN_AGENT_MODEL", "qwen2.5:7b")
 # before the host's own response timeout; a local Ollama on CPU needs more.
 LLM_TIMEOUT  = float(os.environ.get("MIZAN_LLM_TIMEOUT", "110"))
 AGENT_ROUNDS = 3
+# The model picks how many tools to call per round. Each one can reach an
+# upstream provider, so both the count and the deadline are enforced here.
+AGENT_MAX_TOOL_CALLS = 8
 AGENT_LIMIT_PER_MINUTE = int(os.environ.get("MIZAN_AGENT_LIMIT", "6"))
 
 _LEGAL_WORDS = {"berhad", "bhd", "sdn", "inc", "corporation", "corp",
@@ -1815,7 +1821,8 @@ Rules:
 - Call find_company when the user gives a name, not a code. If several companies match and the choice matters, ask which one.
 - Use only the numbers a tool returned. Do not estimate a ratio.
 - Treat dataQuality 'partial' as unverified, never as clean.
-- Reply in the language the user used, Malay or English.
+- Reply in English unless the question itself is written in Malay.
+- Write plain prose. The answer box shows text verbatim, so no markdown: no asterisks, hashes, underscores or bullet symbols.
 - Plain language: explain a ratio as sen per RM1, not as a decimal.
 - End with one concrete next step. No financial advice and no price predictions.
 - Keep the answer under 200 words unless the user asks for detail."""
@@ -1858,6 +1865,7 @@ def run_agent(question: str) -> dict:
     screened = []
     answer = ""
     deadline = time.monotonic() + LLM_TIMEOUT
+    tool_calls_made = 0
 
     for _ in range(AGENT_ROUNDS):
         remaining = deadline - time.monotonic()
@@ -1871,6 +1879,8 @@ def run_agent(question: str) -> dict:
             answer = (message.get("content") or "").strip()
             break
 
+        # Every tool_call needs a matching tool message, so the ones over budget
+        # are answered with an error rather than dropped from the history.
         for call in calls:
             fn = call.get("function") or {}
             raw = fn.get("arguments")
@@ -1878,7 +1888,11 @@ def run_agent(question: str) -> dict:
                 args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
             except ValueError:
                 args = {}
-            out = _run_tool(fn.get("name") or "", args)
+            if time.monotonic() >= deadline or tool_calls_made >= AGENT_MAX_TOOL_CALLS:
+                out = {"error": "This request is out of time or tool calls."}
+            else:
+                tool_calls_made += 1
+                out = _run_tool(fn.get("name") or "", args)
             failed = isinstance(out, dict) and "error" in out
             if fn.get("name") == "screen_company" and not failed:
                 screened.append(out)
@@ -1916,7 +1930,7 @@ RATE_LIMIT_PER_MINUTE = int(os.environ.get("MIZAN_RATE_LIMIT", "60"))
 # treated as the client identity: the per-client limit collapses into a single
 # global bucket shared by everyone, and the loopback fallback in
 # _admin_authorised() makes the mutating endpoints world-writable. The real
-# client is the first hop in X-Forwarded-For.
+# client is the last hop in X-Forwarded-For, the address the proxy appended.
 #
 # Set MIZAN_TRUST_PROXY=0 where the app is reached directly. There, the header
 # is attacker-controlled and trusting it would let one caller mint a fresh
@@ -1926,16 +1940,22 @@ TRUST_PROXY = os.environ.get("MIZAN_TRUST_PROXY", "1") == "1"
 _rl_lock    = threading.Lock()
 _rl_buckets: dict = {}
 # Separate budget for /ask: each question costs model tokens, so it cannot share
-# the 60-per-minute allowance meant for cheap screening calls.
+# the 60-per-minute allowance meant for cheap screening calls. The global bucket
+# is a ceiling on the whole process, because a per-client limit is only as good
+# as the client identity the proxy supplies.
 _agent_rl_buckets: dict = {}
+_agent_global_buckets: dict = {}
+AGENT_GLOBAL_LIMIT_PER_MINUTE = int(os.environ.get("MIZAN_AGENT_GLOBAL_LIMIT", "40"))
 
 def client_ip() -> str:
     if TRUST_PROXY:
         forwarded = request.headers.get("X-Forwarded-For", "")
         if forwarded:
-            first = forwarded.split(",")[0].strip()
-            if first:
-                return first
+            # The proxy appends the address it saw, so the last entry is the one a
+            # caller cannot forge. The leftmost entry is whatever the caller sent.
+            last = forwarded.split(",")[-1].strip()
+            if last:
+                return last
     return request.remote_addr or "unknown"
 
 def rate_limit_ok(client: str, limit: int = None, buckets: dict = None) -> bool:
@@ -2042,7 +2062,8 @@ def purify():
 
 @app.route("/ask", methods=["POST"])
 def ask():
-    if not rate_limit_ok(client_ip(), AGENT_LIMIT_PER_MINUTE, _agent_rl_buckets):
+    if (not rate_limit_ok("all", AGENT_GLOBAL_LIMIT_PER_MINUTE, _agent_global_buckets)
+            or not rate_limit_ok(client_ip(), AGENT_LIMIT_PER_MINUTE, _agent_rl_buckets)):
         return jsonify({"ok":False,
                         "error":"Too many questions. Please wait a minute and try again."}), 429
 

@@ -64,7 +64,36 @@ def test_screen_company_returns_the_engine_verdict(srv, monkeypatch):
 
 # ── /ask ──────────────────────────────────────────────────
 
-def test_ask_returns_502_when_the_model_is_unreachable(client, monkeypatch):
+@pytest.fixture
+def fresh_limits(srv, monkeypatch):
+    """A clean rate-limit state, so one test's requests cannot spend another's."""
+    monkeypatch.setattr(srv, "_agent_rl_buckets", {})
+    monkeypatch.setattr(srv, "_agent_global_buckets", {})
+    return srv
+
+
+def test_ask_rejects_a_body_larger_than_the_cap(client, fresh_limits):
+    response = client.post("/ask", data=b"x" * (65 * 1024),
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 413
+
+
+def test_ask_has_a_process_wide_ceiling(client, fresh_limits, monkeypatch):
+    monkeypatch.setattr(mizan, "run_agent", lambda q: {"answer": "ok", "screened": []})
+    monkeypatch.setattr(mizan, "AGENT_GLOBAL_LIMIT_PER_MINUTE", 2)
+    monkeypatch.setattr(mizan, "AGENT_LIMIT_PER_MINUTE", 100)
+
+    codes = [client.post("/ask", json={"question": "hi"}).status_code for _ in range(3)]
+
+    assert codes == [200, 200, 429]
+
+
+def test_client_ip_uses_the_hop_the_proxy_appended(srv):
+    with srv.app.test_request_context(headers={"X-Forwarded-For": "9.9.9.9, 203.0.113.5"}):
+        assert srv.client_ip() == "203.0.113.5"
+
+
+def test_ask_returns_502_when_the_model_is_unreachable(client, fresh_limits, monkeypatch):
     def boom(messages, *_):
         raise RuntimeError("connection refused")
 
@@ -188,6 +217,21 @@ def test_agent_stops_after_the_round_limit(srv, monkeypatch):
 
     assert "narrower question" in result["answer"]
     assert len(calls) == srv.AGENT_ROUNDS
+
+
+def test_agent_caps_the_tool_calls_one_reply_can_request(srv, monkeypatch):
+    """A model that asks for twenty tools in one turn gets eight executed."""
+    ran = []
+    monkeypatch.setattr(srv, "_run_tool", lambda name, args: ran.append(name) or {"ok": True})
+    calls = [_tool_call(f"t{i}", "list_companies", {}) for i in range(20)]
+    turns = [{"role": "assistant", "content": None, "tool_calls": calls},
+             {"role": "assistant", "content": "done"}]
+    monkeypatch.setattr(srv, "_llm_chat", lambda messages, *_: turns.pop(0))
+
+    result = srv.run_agent("list everything")
+
+    assert len(ran) == srv.AGENT_MAX_TOOL_CALLS
+    assert result["answer"] == "done"
 
 
 def test_agent_gives_up_when_the_time_budget_is_spent(srv, monkeypatch):

@@ -84,16 +84,28 @@ if [[ -z "${MIZAN_LLM_BASE_URL:-}" ]]; then
   echo "Note: MIZAN_LLM_BASE_URL is unset, so /ask will answer 502 on the function." >&2
 fi
 
-# Lambda takes one comma-separated string, so only non-empty values go in.
-# Provider keys are alphanumeric, so none of them contain a comma.
+# The environment goes in a mode-600 file rather than on the command line.
+# argv is readable by any process on the machine, and an API error can echo the
+# parameters back. file:// also lifts the old "no commas in a value" limit.
 # 20s, not 25: gunicorn inside the image is itself capped at 25s, under the
 # Function URL's 30s response limit, and the agent has to answer before that.
-ENV_VARS="TIINGO_API_KEY=${TIINGO_API_KEY},PORT=8080,MIZAN_LLM_TIMEOUT=${MIZAN_LLM_TIMEOUT:-20}"
-for VAR in MIZAN_LLM_BASE_URL MIZAN_LLM_API_KEY MIZAN_AGENT_MODEL; do
-  if [[ -n "${!VAR:-}" ]]; then
-    ENV_VARS="${ENV_VARS},${VAR}=${!VAR}"
-  fi
-done
+# shortcut: values are inserted unescaped; keys, URLs and model ids contain no
+# quotes or backslashes, and validate-env would be the place to add that.
+ENV_FILE_JSON="$(mktemp)"
+chmod 600 "${ENV_FILE_JSON}"
+trap 'rm -f "${ENV_FILE_JSON}"' EXIT
+{
+  printf '{"Variables":{"TIINGO_API_KEY":"%s","PORT":"8080","MIZAN_LLM_TIMEOUT":"%s"' \
+    "${TIINGO_API_KEY}" "${MIZAN_LLM_TIMEOUT:-20}"
+  for VAR in MIZAN_LLM_BASE_URL MIZAN_LLM_API_KEY MIZAN_AGENT_MODEL; do
+    if [[ -n "${!VAR:-}" ]]; then
+      printf ',"%s":"%s"' "${VAR}" "${!VAR}"
+    fi
+  done
+  printf '}}'
+} > "${ENV_FILE_JSON}"
+# The AWS CLI is a Windows binary here, so it cannot read an MSYS path.
+ENV_JSON_PATH="$(cygpath -w "${ENV_FILE_JSON}" 2>/dev/null || echo "${ENV_FILE_JSON}")"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}:${IMAGE_TAG}"
@@ -163,7 +175,7 @@ if aws lambda get-function --function-name "${FUNCTION_NAME}" --region "${REGION
   aws lambda update-function-configuration \
     --function-name "${FUNCTION_NAME}" \
     --timeout "${TIMEOUT_S}" \
-    --environment "Variables={${ENV_VARS}}" \
+    --environment "file://${ENV_JSON_PATH}" \
     --region "${REGION}" >/dev/null
 
   # wait function-active only tracks State, not LastUpdateStatus, so an
@@ -209,7 +221,7 @@ else
         --architectures "${ARCH}" \
         --memory-size "${MEMORY_MB}" \
         --timeout "${TIMEOUT_S}" \
-        --environment "Variables={${ENV_VARS}}" \
+        --environment "file://${ENV_JSON_PATH}" \
         --region "${REGION}" 2>&1)"; then
       break
     fi
